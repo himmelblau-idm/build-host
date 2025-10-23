@@ -26,17 +26,18 @@ import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from packaging import version
 
 DEFAULT_REPO_DIR = Path.home() / "code" / "himmelblau"
 DEFAULT_PUBLISH_DIR = Path("/srv/repos/himmelblau")
-SUPPORTED_BRANCHES = ["main", "stable-1.x"]
+SUPPORTED_BRANCHES = ["stable-1.x"]
 STATE_FILE = ".build_state.json"
 LOCK_FILE = ".build_lock"
 PACKAGING_DIR = "packaging"
 
-STABLE_TAG_RE = re.compile(r"^v(?P<maj>\d+)\.(?P<min>\d+)\.(?P<p>\d+)$")
+STABLE_TAG_RE = re.compile(r'^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')
 
-DEB_RE = re.compile(r"""(?xi)^himmelblau_(?P<ver>\d+\.\d+\.\d+)-(?P<distro>[a-z0-9.]+)_amd64\.deb$""")
+DEB_RE = re.compile(r"""(?xi)^.*(?P<ver>\d+\.\d+\.\d+)-(?P<distro>[a-z0-9.]+)_amd64\.deb$""")
 RPM_RE = re.compile(r"""(?xi).*- (?P<distro>fedora\d+|rawhide|rocky\d+|leap\d(?:\.\d)?|tumbleweed|sle\d+sp\d+|sle\d{2}) \.rpm$""")
 
 GPG_KEYID = os.environ.get("HBL_GPG_KEYID")
@@ -116,13 +117,13 @@ def checkout_clean(repo: Path, ref: str):
     log(f"Checking out {ref}...")
     run(["git", "checkout", "--force", ref], cwd=repo)
     run(["git", "reset", "--hard"], cwd=repo)
-    run(["git", "clean", "-fdx"], cwd=repo)
+    run(["git", "clean", "-fdx", "-e", "target"], cwd=repo)
 
 # --- Build & collect ---
 def make_package(repo: Path, env: Optional[dict]) -> int:
     log("Running: make package")
     try:
-        run(["make", "package"], cwd=repo, env=env)
+        run(["/usr/bin/make", "package"], cwd=repo, env=env)
         return 0
     except subprocess.CalledProcessError as e:
         return e.returncode
@@ -257,13 +258,10 @@ def publish_per_distro(publish_root: Path, channel: str, label: str,
 
 # --- Planning + bootstrap helpers ---
 def find_latest_stable_tag(repo: Path, branch: str) -> Optional[str]:
-    def semver_key(tag: str):
-        m = STABLE_TAG_RE.match(tag)
-        return (int(m.group("maj")), int(m.group("min")), int(m.group("p"))) if m else (0, 0, 0)
     candidates = [t for t in git_list_tags(repo) if STABLE_TAG_RE.match(t) and tag_on_branch(repo, t, branch)]
     if not candidates:
         return None
-    candidates.sort(key=semver_key, reverse=True)
+    candidates.sort(key=version.parse, reverse=True)
     return candidates[0]
 
 def plan_stable(repo: Path, branch: str, state: Dict) -> List[str]:
@@ -343,59 +341,24 @@ def main():
         packaging_dir = repo / PACKAGING_DIR
         git_fetch_all(repo)
 
-        # ===== Bootstrap stable if needed =====
-        latest_stable = find_latest_stable_tag(repo, "stable-1.x")
-        if needs_bootstrap_stable(publish_root, latest_stable):
-            if latest_stable:
-                log(f"Bootstrap: publishing latest stable tag {latest_stable} ...")
-                checkout_clean(repo, latest_stable)
-                env = os.environ.copy()
-                started = time.time()
-                rc = make_package(repo, env)
-                if rc != 0:
-                    log(f"ERROR: bootstrap build failed for {latest_stable} (rc={rc})")
-                else:
-                    deb_map, rpm_map, sboms = collect_from_packaging(packaging_dir, built_since=started)
-                    publish_per_distro(publish_root, "stable", latest_stable, deb_map, rpm_map, sboms)
-                    state.setdefault("built_tags", {}).setdefault("stable-1.x", [])
-                    if latest_stable not in state["built_tags"]["stable-1.x"]:
-                        state["built_tags"]["stable-1.x"].append(latest_stable)
-                    save_state(state_path, state)
-
         # ===== Normal stable flow (new tags) =====
         for branch in SUPPORTED_BRANCHES:
-            if branch == "main":
-                continue
-            for tag in plan_stable(repo, branch, state):
-                checkout_clean(repo, tag)
-                env = os.environ.copy()
-                started = time.time()
-                rc = make_package(repo, env)
-                if rc != 0:
-                    log(f"ERROR: build failed for tag {tag} (rc={rc})")
-                    continue
-                deb_map, rpm_map, sboms = collect_from_packaging(packaging_dir, built_since=started)
-                publish_per_distro(publish_root, "stable", tag, deb_map, rpm_map, sboms)
-                state.setdefault("built_tags", {}).setdefault(branch, []).append(tag)
-                save_state(state_path, state)
-
-        # ===== Bootstrap nightly if needed =====
-        tip = git_rev_parse(repo, "origin/main")
-        nightly_label = f"{utc_today()}-{(tip or 'unknown')[:12]}"
-        if needs_bootstrap_nightly(publish_root, nightly_label):
-            log(f"Bootstrap: publishing nightly {nightly_label} ...")
-            checkout_clean(repo, "origin/main")
-            env = os.environ.copy()
-            started = time.time()
-            rc = make_package(repo, env)
-            if rc != 0:
-                log(f"ERROR: bootstrap nightly build failed (rc={rc})")
-            else:
-                deb_map, rpm_map, sboms = collect_from_packaging(packaging_dir, built_since=started)
-                publish_per_distro(publish_root, "nightly", nightly_label, deb_map, rpm_map, sboms)
-                state.setdefault("nightly", {})["last_commit"] = tip
-                state["nightly"]["last_date"] = utc_today()
-                save_state(state_path, state)
+            latest_stable = find_latest_stable_tag(repo, branch)
+            if needs_bootstrap_stable(publish_root, latest_stable):
+                if latest_stable:
+                    log(f"Bootstrap: publishing latest stable tag {latest_stable} ...")
+                    checkout_clean(repo, latest_stable)
+                    env = os.environ.copy()
+                    started = time.time()
+                    rc = make_package(repo, env)
+                    if rc != 0:
+                        log(f"ERROR: Some builds failed for {latest_stable} (rc={rc})")
+                    deb_map, rpm_map, sboms = collect_from_packaging(packaging_dir, built_since=started)
+                    publish_per_distro(publish_root, "stable", latest_stable, deb_map, rpm_map, sboms)
+                    state.setdefault("built_tags", {}).setdefault(branch, [])
+                    if latest_stable not in state["built_tags"][branch]:
+                        state["built_tags"][branch].append(latest_stable)
+                    save_state(state_path, state)
 
         # ===== Normal nightly planner =====
         should, tip2, today = plan_nightly(repo, state, args.force_daily)
@@ -405,14 +368,13 @@ def main():
             started = time.time()
             rc = make_package(repo, env)
             if rc != 0:
-                log(f"ERROR: nightly build failed (rc={rc})")
-            else:
-                deb_map, rpm_map, sboms = collect_from_packaging(packaging_dir, built_since=started)
-                label = f"{today}-{(tip2 or 'unknown')[:12]}"
-                publish_per_distro(publish_root, "nightly", label, deb_map, rpm_map, sboms)
-                state.setdefault("nightly", {})["last_commit"] = tip2
-                state["nightly"]["last_date"] = today
-                save_state(state_path, state)
+                log(f"ERROR: Some nightly builds failed (rc={rc})")
+            deb_map, rpm_map, sboms = collect_from_packaging(packaging_dir, built_since=started)
+            label = f"{today}-{(tip2 or 'unknown')[:12]}"
+            publish_per_distro(publish_root, "nightly", label, deb_map, rpm_map, sboms)
+            state.setdefault("nightly", {})["last_commit"] = tip2
+            state["nightly"]["last_date"] = today
+            save_state(state_path, state)
 
         log("Done.")
         return 0
