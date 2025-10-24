@@ -184,7 +184,7 @@ def collect_from_packaging(packaging_dir: Path, built_since: float):
     return deb, rpm, sboms
 
 # --- Repo metadata ---
-def apt_flat_repo(deb_dir: Path):
+def apt_flat_repo(deb_dir: Path, channel: str):
     debs = list(deb_dir.glob("*.deb"))
     if not debs:
         return
@@ -205,7 +205,7 @@ def apt_flat_repo(deb_dir: Path):
     release.write_text(
         "Origin: Himmelblau\n"
         "Label: Himmelblau\n"
-        "Suite: stable\n"
+        "Suite: {channel}\n"
         f"Codename: {deb_dir.name}\n"
         "Architectures: amd64\n"
         "Components: main\n"
@@ -253,7 +253,7 @@ def publish_per_distro(publish_root: Path, channel: str, label: str,
         ensure_dir(dst)
         for f in files:
             shutil.copy2(f, dst / f.name)
-        apt_flat_repo(dst)
+        apt_flat_repo(dst, channel)
 
     for distro, files in sorted(rpm_map.items()):
         dst = base / "rpm" / distro
@@ -365,7 +365,7 @@ def publish_incremental(publish_root: Path, channel: str, label: str,
         ensure_dir(dst)
         for f in files:
             shutil.copy2(f, dst / f.name)
-        apt_flat_repo(dst)
+        apt_flat_repo(dst, channel)
 
     for distro, files in sorted(rpm_map.items()):
         dst = base / "rpm" / distro
