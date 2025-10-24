@@ -229,6 +229,14 @@ def apt_flat_repo(deb_dir: Path, channel: str):
         subprocess.run(cmd1, cwd=deb_dir, check=True)
         subprocess.run(cmd2, cwd=deb_dir, check=True)
 
+def sign_rpm_repo(rpm_dir: Path):
+    gpg = which("gpg")
+    if not gpg:
+        log("INFO: gpg not found; skipping signing RPM repo {rpm_dir}.")
+    repodata = rpm_dir / "repodata"
+    log(f"Signing RPM repo in {repodata} ...")
+    subprocess.run([gpg, "--detach-sign", "--armor", "repomd.xml"], cwd=repodata, check=True)
+
 def rpm_repo(rpm_dir: Path):
     rpms = list(rpm_dir.glob("*.rpm"))
     if not rpms:
@@ -239,6 +247,7 @@ def rpm_repo(rpm_dir: Path):
         return
     log(f"Generating RPM repodata in {rpm_dir} ...")
     subprocess.run([cr, "."], cwd=rpm_dir, check=True)
+    sign_rpm_repo(rpm_dir)
 
 # --- Publish ---
 def publish_per_distro(publish_root: Path, channel: str, label: str,
