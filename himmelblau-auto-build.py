@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Himmelblau autobuilder/publisher (per-distro DEB/RPM repos) with bootstrap
+Himmelblau autobuilder/publisher (per-distro DEB/RPM repos) with bootstrap + missing-distro retries
 
 - Repo: ~/code/himmelblau (override with --repo-dir)
 - Artifacts: <repo>/packaging/ (DEBs, RPMs, optional SBOMs)
@@ -13,6 +13,10 @@ Himmelblau autobuilder/publisher (per-distro DEB/RPM repos) with bootstrap
 - Bootstrap: if stable/nightly not yet present in --publish-dir, build & publish
   the latest stable tag (reachable from stable-1.x) and a nightly from main.
 - Optional APT Release signing if HBL_GPG_KEYID is set.
+- On every run, before planning new builds, we:
+  * Parse 'Per-distro' targets from origin/main:Makefile
+  * Detect missing distros in stable/<latest_tag> and nightly/<latest_label>
+  * Rebuild ONLY those missing distros (make <target>) and publish incrementally
 """
 
 import argparse
@@ -113,6 +117,13 @@ def git_rev_parse(repo: Path, ref: str) -> str:
     res = run(["git", "rev-parse", ref], cwd=repo, capture=True)
     return res.stdout.decode().strip()
 
+def git_show(repo: Path, ref_and_path: str) -> Optional[str]:
+    try:
+        res = run(["git", "show", ref_and_path], cwd=repo, capture=True)
+        return res.stdout.decode()
+    except subprocess.CalledProcessError:
+        return None
+
 def checkout_clean(repo: Path, ref: str):
     log(f"Checking out {ref}...")
     run(["git", "checkout", "--force", ref], cwd=repo)
@@ -126,6 +137,15 @@ def make_package(repo: Path, env: Optional[dict]) -> int:
         run(["/usr/bin/make", "package"], cwd=repo, env=env)
         return 0
     except subprocess.CalledProcessError as e:
+        return e.returncode
+
+def make_target(repo: Path, target: str, env: Optional[dict]) -> int:
+    try:
+        log(f"Running: make {target}")
+        run(["/usr/bin/make", target], cwd=repo, env=env)
+        return 0
+    except subprocess.CalledProcessError as e:
+        log(f"WARN: make {target} failed with rc={e.returncode} (continuing)")
         return e.returncode
 
 def parse_artifact(p: Path) -> Tuple[str, Optional[str]]:
@@ -256,6 +276,163 @@ def publish_per_distro(publish_root: Path, channel: str, label: str,
         pass
     os.symlink(label, latest)
 
+# --- Missing-distro retry helpers ---
+DISTRO_LINE_RE = re.compile(r'^\s*-\s*make\s+([a-z0-9.]+)\s*$', re.IGNORECASE | re.MULTILINE)
+
+def parse_per_distro_targets_via_make_help(repo: Path) -> List[str]:
+    """
+    Checkout origin/main, run `make help`, parse the generated 'Per-distro' target lines,
+    then restore the previous HEAD. If anything fails, return [].
+    """
+    # Remember where we started
+    try:
+        current_head = git_rev_parse(repo, "HEAD")
+    except Exception:
+        current_head = None
+
+    targets: List[str] = []
+    try:
+        # ensure we use the Makefile as it exists on main
+        checkout_clean(repo, "origin/main")
+        # run make help and capture output
+        res = run(["/usr/bin/make", "help"], cwd=repo, capture=True)
+        txt = res.stdout.decode(errors="replace")
+        candidates = DISTRO_LINE_RE.findall(txt)
+
+        # de-dupe while preserving order
+        seen = set()
+        for t in candidates:
+            if t not in seen:
+                targets.append(t)
+                seen.add(t)
+
+        if targets:
+            log(f"Parsed {len(targets)} per-distro targets from `make help` on origin/main.")
+        else:
+            log("WARN: no per-distro targets found in `make help` output.")
+    except subprocess.CalledProcessError as e:
+        log(f"WARN: `make help` failed (rc={e.returncode}); cannot determine per-distro targets.")
+    except Exception as e:
+        log(f"WARN: error running `make help`: {e}")
+    finally:
+        # restore original checkout if we had it
+        if current_head:
+            try:
+                checkout_clean(repo, current_head)
+            except Exception as e:
+                log(f"WARN: failed to restore previous HEAD after make help: {e}")
+
+    return targets
+
+def target_is_deb(t: str) -> bool:
+    return t.startswith("ubuntu") or t.startswith("debian")
+
+def published_has_any_pkgs(base: Path, t: str) -> bool:
+    """
+    Returns True if the publish dir already contains at least one artifact for target t.
+    """
+    if target_is_deb(t):
+        d = base / "deb" / t
+        return d.is_dir() and any(d.glob("*.deb"))
+    else:
+        d = base / "rpm" / t
+        return d.is_dir() and any(d.glob("*.rpm"))
+
+def compute_missing_targets_in_label(publish_root: Path, channel: str, label: str, expected_targets: List[str]) -> List[str]:
+    base = publish_root / channel / label
+    if not base.exists():
+        return []
+    missing: List[str] = []
+    for t in expected_targets:
+        if not published_has_any_pkgs(base, t):
+            missing.append(t)
+    if missing:
+        log(f"{channel}/{label}: missing {len(missing)} targets -> {', '.join(missing)}")
+    else:
+        log(f"{channel}/{label}: no missing targets.")
+    return missing
+
+def publish_incremental(publish_root: Path, channel: str, label: str,
+                        deb_map: Dict[str, List[Path]], rpm_map: Dict[str, List[Path]], sboms: List[Path]):
+    """
+    Append artifacts to an existing label directory and regenerate metadata only for touched distros.
+    """
+    base = publish_root / channel / label
+    ensure_dir(base)
+
+    for distro, files in sorted(deb_map.items()):
+        dst = base / "deb" / distro
+        ensure_dir(dst)
+        for f in files:
+            shutil.copy2(f, dst / f.name)
+        apt_flat_repo(dst)
+
+    for distro, files in sorted(rpm_map.items()):
+        dst = base / "rpm" / distro
+        ensure_dir(dst)
+        for f in files:
+            shutil.copy2(f, dst / f.name)
+        rpm_repo(dst)
+
+    if sboms:
+        sbdir = base / "sbom"
+        ensure_dir(sbdir)
+        for f in sboms:
+            shutil.copy2(f, sbdir / f.name)
+
+def retry_missing_for_stable(repo: Path, publish_root: Path, expected_targets: List[str]):
+    # Discover the latest stable tag that already has a publish dir (or symlink).
+    tags = sorted([t for t in git_list_tags(repo) if STABLE_TAG_RE.match(t)], key=version.parse, reverse=True)
+    for t in tags:
+        label_dir = publish_root / "stable" / t
+        if label_dir.exists():
+            latest_tag = t
+            break
+    else:
+        return  # Nothing published yet
+    missing = compute_missing_targets_in_label(publish_root, "stable", latest_tag, expected_targets)
+    if not missing:
+        return
+    # Build missing targets on that tag
+    checkout_clean(repo, latest_tag)
+    env = os.environ.copy()
+    started = time.time()
+    for tgt in missing:
+        make_target(repo, tgt, env)
+    deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR, built_since=started)
+    publish_incremental(publish_root, "stable", latest_tag, deb_map, rpm_map, sboms)
+
+def resolve_nightly_latest_label(publish_root: Path) -> Optional[str]:
+    latest = publish_root / "nightly" / "latest"
+    if latest.is_symlink():
+        try:
+            return os.readlink(latest)
+        except OSError:
+            return None
+    # Fallback: pick most recent directory (lexicographically should be fine with YYYY-MM-DD-commit form)
+    nightly_root = publish_root / "nightly"
+    if nightly_root.exists():
+        labels = [p.name for p in nightly_root.iterdir() if p.is_dir()]
+        if labels:
+            return sorted(labels, reverse=True)[0]
+    return None
+
+def retry_missing_for_nightly(repo: Path, publish_root: Path, expected_targets: List[str]):
+    label = resolve_nightly_latest_label(publish_root)
+    if not label:
+        return
+    missing = compute_missing_targets_in_label(publish_root, "nightly", label, expected_targets)
+    if not missing:
+        return
+    # Build missing targets from origin/main
+    checkout_clean(repo, "origin/main")
+    env = os.environ.copy()
+    started = time.time()
+    for tgt in missing:
+        make_target(repo, tgt, env)
+    deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR, built_since=started)
+    publish_incremental(publish_root, "nightly", label, deb_map, rpm_map, sboms)
+
 # --- Planning + bootstrap helpers ---
 def find_latest_stable_tag(repo: Path, branch: str) -> Optional[str]:
     candidates = [t for t in git_list_tags(repo) if STABLE_TAG_RE.match(t) and tag_on_branch(repo, t, branch)]
@@ -308,7 +485,7 @@ def needs_bootstrap_nightly(publish_root: Path, label: str) -> bool:
 
 # --- Main ---
 def main():
-    ap = argparse.ArgumentParser(description="Himmelblau autobuilder/publisher (per-distro) with bootstrap")
+    ap = argparse.ArgumentParser(description="Himmelblau autobuilder/publisher (per-distro) with bootstrap + missing-distro retries")
     ap.add_argument("--repo-dir", type=Path, default=DEFAULT_REPO_DIR)
     ap.add_argument("--publish-dir", type=Path, default=DEFAULT_PUBLISH_DIR)
     ap.add_argument("--force-daily", action="store_true")
@@ -340,6 +517,20 @@ def main():
 
         packaging_dir = repo / PACKAGING_DIR
         git_fetch_all(repo)
+
+        # Always parse expected per-distro targets from origin/main
+        expected_targets = parse_per_distro_targets_via_make_help(repo)
+
+        # ===== Retry missing (stable + nightly) BEFORE planning new builds =====
+        if expected_targets:
+            try:
+                retry_missing_for_stable(repo, publish_root, expected_targets)
+            except Exception as e:
+                log(f"WARN: stable retry encountered an error: {e}")
+            try:
+                retry_missing_for_nightly(repo, publish_root, expected_targets)
+            except Exception as e:
+                log(f"WARN: nightly retry encountered an error: {e}")
 
         # ===== Normal stable flow (new tags) =====
         for branch in SUPPORTED_BRANCHES:
