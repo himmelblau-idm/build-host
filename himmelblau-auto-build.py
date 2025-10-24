@@ -380,6 +380,14 @@ def publish_incremental(publish_root: Path, channel: str, label: str,
         for f in sboms:
             shutil.copy2(f, sbdir / f.name)
 
+def make_sign_rpms(repo: Path, env: Optional[dict]) -> int:
+    log("Running: make sign-rpms")
+    try:
+        run(["/usr/bin/make", "sign-rpms"], cwd=repo, env=env)
+        return 0
+    except subprocess.CalledProcessError as e:
+        return e.returncode
+
 def retry_missing_for_stable(repo: Path, publish_root: Path, expected_targets: List[str]):
     # Discover the latest stable tag that already has a publish dir (or symlink).
     tags = sorted([t for t in git_list_tags(repo) if STABLE_TAG_RE.match(t)], key=version.parse, reverse=True)
@@ -399,6 +407,7 @@ def retry_missing_for_stable(repo: Path, publish_root: Path, expected_targets: L
     started = time.time()
     for tgt in missing:
         make_target(repo, tgt, env)
+    make_sign_rpms(repo, env)
     deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR, built_since=started)
     publish_incremental(publish_root, "stable", latest_tag, deb_map, rpm_map, sboms)
 
