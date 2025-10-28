@@ -205,7 +205,7 @@ def apt_flat_repo(deb_dir: Path, channel: str):
     release.write_text(
         "Origin: Himmelblau\n"
         "Label: Himmelblau\n"
-        "Suite: {channel}\n"
+        f"Suite: {channel}\n"
         f"Codename: {deb_dir.name}\n"
         "Architectures: amd64\n"
         "Components: main\n"
