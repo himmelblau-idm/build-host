@@ -1,0 +1,37 @@
+#!/bin/sh
+
+REPO=${1:?usage: $0 /path/to/repo [suite] [distro]}
+SUITE=${2:-stable}
+CODENAME=${3:-$(basename "$REPO")}
+APTFTPARCHIVE=$(realpath ./bin/apt-ftparchive)
+
+make
+rm -f "$REPO/Packages" "$REPO/Packages.gz"
+pushd $REPO
+dpkg-scanpackages . /dev/null > ./Packages
+gzip -n -c "./Packages" > ./Packages.gz
+
+rm -f "$REPO/Release"
+tmp=$(mktemp)
+{
+  printf 'Origin: Himmelblau\n'
+  printf 'Label: Himmelblau\n'
+  printf 'Suite: %s\n' "$SUITE"
+  printf 'Codename: %s\n' "$CODENAME"
+  printf 'Architectures: amd64\n'
+  printf 'Components: main\n'
+  printf 'Date: %s\n' "$(date -Ru)"
+  $APTFTPARCHIVE release .
+} > "$tmp"
+mv "$tmp" "$REPO/Release"
+popd
+
+rm -f "$REPO/InRelease" "$REPO/Release.gpg"
+if [ -f $REPO/Release ] ; then
+  gpg --batch --yes --pinentry-mode loopback --clearsign -o $REPO/InRelease $REPO/Release
+  gpg --batch --yes --pinentry-mode loopback -abs -o $REPO/Release.gpg $REPO/Release
+else
+  echo "$REPO/Release is missing!"
+fi
+
+echo "Done: $(ls -1 "$REPO"/{Packages,Packages.gz,Release,InRelease,Release.gpg} 2>/dev/null)"

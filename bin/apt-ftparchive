@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Run apt-ftparchive via Podman, mounting all directory arguments.
+
+set -e
+IM=hbl/apt-ftparchive:bookworm
+MOUNTS=()
+
+for a in "$@"; do
+  if [ -d "$a" ]; then
+    abs=$(readlink -f "$a")
+    MOUNTS+=(-v "$abs":"$abs":Z)
+  fi
+done
+
+MOUNTS+=(-v "$PWD":"$PWD":Z -w "$PWD")
+
+exec podman run --rm \
+  --userns=keep-id -u "$(id -u)":"$(id -g)" \
+  "${MOUNTS[@]}" \
+  "$IM" "$@"
