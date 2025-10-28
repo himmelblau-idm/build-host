@@ -389,6 +389,25 @@ def publish_incremental(publish_root: Path, channel: str, label: str,
         for f in sboms:
             shutil.copy2(f, sbdir / f.name)
 
+def patch_signing_keys(filename):
+    old_hexes = [
+        "0xFFE471BA97CD96ED7330E0B4F5A25D2D6AA97EC9",
+        "0x3D46C88168B2FF8D75D0B1786CCA48F23916FC03",
+    ]
+    new_hex = "0xE87FD8D463A5E4814B9CDBA90CC0D4002C425E03"
+
+    # Read file contents
+    with open(filename, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # Replace all occurrences
+    for old in old_hexes:
+        content = content.replace(old, new_hex)
+
+    # Write back to file (in-place)
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(content)
+
 def make_sign_rpms(repo: Path, env: Optional[dict]) -> int:
     log("Running: make sign-rpms")
     try:
@@ -412,6 +431,7 @@ def retry_missing_for_stable(repo: Path, publish_root: Path, expected_targets: L
         return
     # Build missing targets on that tag
     checkout_clean(repo, latest_tag)
+    patch_signing_keys(repo / "Makefile")
     env = os.environ.copy()
     started = time.time()
     for tgt in missing:
@@ -557,6 +577,7 @@ def main():
                 if latest_stable:
                     log(f"Bootstrap: publishing latest stable tag {latest_stable} ...")
                     checkout_clean(repo, latest_stable)
+                    patch_signing_keys(repo / "Makefile")
                     env = os.environ.copy()
                     started = time.time()
                     rc = make_package(repo, env)
