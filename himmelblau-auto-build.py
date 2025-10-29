@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from packaging import version
+import tempfile
 
 DEFAULT_REPO_DIR = Path.home() / "code" / "himmelblau"
 DEFAULT_PUBLISH_DIR = Path("/srv/repos/himmelblau")
@@ -185,49 +186,138 @@ def collect_from_packaging(packaging_dir: Path, built_since: float):
 
 # --- Repo metadata ---
 def apt_flat_repo(deb_dir: Path, channel: str):
+    deb_dir = Path(deb_dir).resolve()
+
     debs = list(deb_dir.glob("*.deb"))
     if not debs:
         return
-    scanner = which("dpkg-scanpackages") or which("apt-ftparchive")
-    if not scanner:
+
+    def log(msg: str):
+        print(msg, flush=True)
+
+    # Resolve the directory of THIS script (not the current working dir)
+    try:
+        SCRIPT_DIR = Path(__file__).resolve().parent
+    except NameError:
+        # __file__ may not exist in interactive contexts; fall back to CWD
+        SCRIPT_DIR = Path.cwd()
+
+    # GPG env controls (unchanged)
+    GPG_KEYID   = os.environ.get("GPG_KEYID", "").strip()
+    GPG_HOMEDIR = os.environ.get("GPG_HOMEDIR", "").strip()
+    GPG_EXTRA   = os.environ.get("GPG_EXTRA", "").strip()
+    APTFTPARCHIVE_ENV = os.environ.get("APTFTPARCHIVE", "").strip()
+
+    # Tool resolution
+    scan = shutil.which("dpkg-scanpackages")
+
+    # Prefer ./bin/apt-ftparchive (next to the build script), then PATH, then env
+    aptft_candidates: list[str] = []
+    local_aptft = SCRIPT_DIR / "bin" / "apt-ftparchive"
+    if local_aptft.is_file() and os.access(local_aptft, os.X_OK):
+        aptft_candidates.append(str(local_aptft))
+    if shutil.which("apt-ftparchive"):
+        aptft_candidates.append(shutil.which("apt-ftparchive"))
+    if APTFTPARCHIVE_ENV:
+        aptft_candidates.append(APTFTPARCHIVE_ENV)
+
+    # First non-empty candidate wins
+    aptft = next((c for c in aptft_candidates if c), None)
+
+    if not scan and not aptft:
         log(f"INFO: dpkg-scanpackages/apt-ftparchive not found; skipping APT metadata in {deb_dir}.")
         return
+
     log(f"Generating APT metadata in {deb_dir} ...")
-    packages = deb_dir / "Packages"
-    if "dpkg-scanpackages" in scanner:
+
+    packages     = deb_dir / "Packages"
+    packages_gz  = deb_dir / "Packages.gz"
+    release      = deb_dir / "Release"
+    inrelease    = deb_dir / "InRelease"
+    release_gpg  = deb_dir / "Release.gpg"
+
+    # Clean old indices/signatures
+    for p in (packages, packages_gz, inrelease, release_gpg):
+        try:
+            p.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # Create Packages
+    if scan:
         with open(packages, "wb") as outf:
-            subprocess.run([scanner, ".", "/dev/null"], cwd=deb_dir, check=True, stdout=outf)
+            subprocess.run([scan, ".", "/dev/null"], cwd=deb_dir, check=True, stdout=outf)
     else:
         with open(packages, "wb") as outf:
-            subprocess.run([scanner, "packages", "."], cwd=deb_dir, check=True, stdout=outf)
-    subprocess.run(["gzip", "-f", str(packages)], cwd=deb_dir, check=True)
-    release = deb_dir / "Release"
-    release.write_text(
-        "Origin: Himmelblau\n"
-        "Label: Himmelblau\n"
-        f"Suite: {channel}\n"
-        f"Codename: {deb_dir.name}\n"
-        "Architectures: amd64\n"
-        "Components: main\n"
-        f"Date: {dt.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S +0000')}\n"
-    )
-    aptft = which("apt-ftparchive")
-    if aptft:
-        with open(release, "a") as outf:
-            subprocess.run([aptft, "release", "."], cwd=deb_dir, check=True, stdout=outf)
-    if GPG_KEYID and which("gpg"):
-        log(f"Signing APT Release in {deb_dir} ...")
-        cmd1 = ["gpg", "--batch", "--yes", "--local-user", GPG_KEYID, "--clearsign", "-o", "InRelease", "Release"]
-        cmd2 = ["gpg", "--batch", "--yes", "--local-user", GPG_KEYID, "-abs", "-o", "Release.gpg", "Release"]
+            subprocess.run([aptft, "packages", "."], cwd=deb_dir, check=True, stdout=outf)
+
+    # gzip -n -c Packages > Packages.gz
+    with open(packages_gz, "wb") as gzout, open(packages, "rb") as pin:
+        subprocess.run(["gzip", "-n", "-c"], cwd=deb_dir, check=True, stdin=pin, stdout=gzout)
+
+    # Build Release atomically
+    try:
+        release.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    date_str = dt.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(deb_dir))
+    try:
+        with os.fdopen(tmp_fd, "wb") as tmp:
+            header = (
+                "Origin: Himmelblau\n"
+                "Label: Himmelblau\n"
+                f"Suite: {channel}\n"
+                f"Codename: {deb_dir.name}\n"
+                "Architectures: amd64\n"
+                "Components: main\n"
+                f"Date: {date_str}\n"
+            ).encode("utf-8")
+            tmp.write(header)
+
+            if aptft:
+                proc = subprocess.run([aptft, "release", "."], cwd=deb_dir, check=True, capture_output=True)
+                tmp.write(proc.stdout)
+
+        os.replace(tmp_path, release)
+    finally:
+        if Path(tmp_path).exists() and not release.exists():
+            try:
+                Path(tmp_path).unlink()
+            except Exception:
+                pass
+
+    # Re-sign
+    for p in (inrelease, release_gpg):
+        try:
+            p.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    if release.exists():
+        sign_common = ["gpg", "--batch", "--yes", "--pinentry-mode", "loopback"]
         if GPG_HOMEDIR:
-            cmd1[1:1] = ["--homedir", GPG_HOMEDIR]
-            cmd2[1:1] = ["--homedir", GPG_HOMEDIR]
+            sign_common += ["--homedir", GPG_HOMEDIR]
         if GPG_EXTRA:
-            extra = GPG_EXTRA.split()
-            cmd1[1:1] = extra
-            cmd2[1:1] = extra
-        subprocess.run(cmd1, cwd=deb_dir, check=True)
-        subprocess.run(cmd2, cwd=deb_dir, check=True)
+            sign_common += GPG_EXTRA.split()
+
+        if GPG_KEYID:
+            sign_inrelease   = sign_common + ["--local-user", GPG_KEYID, "--clearsign", "-o", "InRelease", "Release"]
+            sign_release_gpg = sign_common + ["--local-user", GPG_KEYID, "-abs", "-o", "Release.gpg", "Release"]
+        else:
+            sign_inrelease   = sign_common + ["--clearsign", "-o", "InRelease", "Release"]
+            sign_release_gpg = sign_common + ["-abs", "-o", "Release.gpg", "Release"]
+
+        log(f"Signing APT Release in {deb_dir} ...")
+        subprocess.run(sign_inrelease, cwd=deb_dir, check=True)
+        subprocess.run(sign_release_gpg, cwd=deb_dir, check=True)
+    else:
+        log(f"{release} is missing!")
+
+    log("Done: " + " ".join(
+        str(p) for p in [packages, packages_gz, release, inrelease, release_gpg] if Path(p).exists()
+    ))
 
 def sign_rpm_repo(rpm_dir: Path):
     gpg = which("gpg")
