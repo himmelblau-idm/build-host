@@ -239,7 +239,7 @@ def apt_flat_repo(deb_dir: Path, channel: str):
     # Clean old indices/signatures
     for p in (packages, packages_gz, inrelease, release_gpg):
         try:
-            p.unlink(missing_ok=True)
+            p.unlink()
         except Exception:
             pass
 
@@ -257,7 +257,7 @@ def apt_flat_repo(deb_dir: Path, channel: str):
 
     # Build Release atomically
     try:
-        release.unlink(missing_ok=True)
+        release.unlink()
     except Exception:
         pass
 
@@ -277,7 +277,7 @@ def apt_flat_repo(deb_dir: Path, channel: str):
             tmp.write(header)
 
             if aptft:
-                proc = subprocess.run([aptft, "release", "."], cwd=deb_dir, check=True, capture_output=True)
+                proc = subprocess.run([aptft, "release", "."], cwd=deb_dir, check=True, stdout=subprocess.PIPE)
                 tmp.write(proc.stdout)
 
         os.replace(tmp_path, release)
@@ -291,7 +291,7 @@ def apt_flat_repo(deb_dir: Path, channel: str):
     # Re-sign
     for p in (inrelease, release_gpg):
         try:
-            p.unlink(missing_ok=True)
+            p.unlink()
         except Exception:
             pass
 
