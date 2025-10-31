@@ -157,7 +157,7 @@ def parse_artifact(p: Path) -> Tuple[str, Optional[str]]:
     if nl.endswith(".rpm"):
         m = RPM_RE.match(nl)
         return ("rpm", m.group("distro") if m else "unknown")
-    if nl.endswith(".spdx") or nl.endswith(".sbom.json") or nl.endswith(".cdx.json") or nl.endswith(".spdx.json"):
+    if nl.endswith(".spdx") or nl.endswith("sbom.json") or nl.endswith(".cdx.json") or nl.endswith(".spdx.json"):
         return ("sbom", None)
     return ("other", None)
 
