@@ -700,6 +700,10 @@ def main():
         return 0
     finally:
         lock.release()
+        subprocess.run(
+            ["find", "/mnt-build/repos/himmelblau", "-type", "f", "-name", "Release", "-exec", "chmod", "0644", "{}", "+"],
+            check=True
+        )
 
 if __name__ == "__main__":
     sys.exit(main())
