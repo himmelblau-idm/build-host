@@ -11,7 +11,7 @@ Himmelblau autobuilder/publisher (per-distro DEB/RPM repos) with bootstrap + mis
     nightly/<YYYY-MM-DD>-<commit>/(deb|rpm)/<distro>/...
     .../sbom/
 - Bootstrap: if stable/nightly not yet present in --publish-dir, build & publish
-  the latest stable tag (reachable from stable-1.x) and a nightly from main.
+  the latest stable tag (reachable from stable-2.x) and a nightly from main.
 - Optional APT Release signing if HBL_GPG_KEYID is set.
 - On every run, before planning new builds, we:
   * Parse 'Per-distro' targets from origin/main:Makefile
@@ -35,7 +35,7 @@ import tempfile
 
 DEFAULT_REPO_DIR = Path.home() / "code" / "himmelblau"
 DEFAULT_PUBLISH_DIR = Path("/srv/repos/himmelblau")
-SUPPORTED_BRANCHES = ["stable-1.x"]
+SUPPORTED_BRANCHES = ["stable-2.x"]
 STATE_FILE = ".build_state.json"
 LOCK_FILE = ".build_lock"
 PACKAGING_DIR = "packaging"
