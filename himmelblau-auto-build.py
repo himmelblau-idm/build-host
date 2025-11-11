@@ -327,6 +327,66 @@ def sign_rpm_repo(rpm_dir: Path):
     log(f"Signing RPM repo in {repodata} ...")
     subprocess.run([gpg, "--detach-sign", "--armor", "repomd.xml"], cwd=repodata, check=True)
 
+def create_repo_file(rpm_dir: Path):
+    """
+    Create 'himmelblau.repo' inside rpm_dir, deriving:
+      - channel: 'stable' or 'nightly'
+      - version: e.g. 'latest' or a timestamped/versioned dir
+      - distro:  last path component (e.g., 'fedora42', 'fedora43', 'rawhide', 'tumbleweed')
+
+    Expected layout (examples):
+      /.../stable/<version>/rpm/<distro>
+      /.../nightly/<version>/rpm/<distro>
+
+    The generated baseurl:
+      https://packages.himmelblau-idm.org/{channel}/{version}/rpm/{distro}/
+    """
+    parts = list(rpm_dir.parts)
+
+    # Find channel in the path
+    if "stable" in parts:
+        ch_idx = parts.index("stable")
+        channel = "stable"
+    elif "nightly" in parts:
+        ch_idx = parts.index("nightly")
+        channel = "nightly"
+    else:
+        raise ValueError(f"Path does not contain 'stable' or 'nightly': {rpm_dir}")
+
+    # Version is the segment immediately after the channel
+    if len(parts) <= ch_idx + 1:
+        raise ValueError(f"Path missing version component after '{channel}': {rpm_dir}")
+    version = parts[ch_idx + 1]  # e.g. 'latest' or '2025-11-10-13c22d1890ad'
+
+    # Basic sanity check for '/rpm/<distro>'
+    # We accept any distro name; just ensure 'rpm' is present before the last segment
+    try:
+        rpm_idx = parts.index("rpm", ch_idx + 2)
+    except ValueError:
+        raise ValueError(f"Path does not contain '/rpm/' after version: {rpm_dir}")
+    if rpm_idx != len(parts) - 2:
+        # Expect .../<channel>/<version>/rpm/<distro>
+        # (rpm should be the penultimate element)
+        pass  # don't hard-fail; just proceed (allows extra nesting if you really have it)
+
+    distro = rpm_dir.name  # last component
+    base_url = f"https://packages.himmelblau-idm.org/{channel}/{version}/rpm/{distro}/"
+    gpgkey_url = "https://packages.himmelblau-idm.org/himmelblau.asc"
+
+    repo_content = (
+        "[himmelblau]\n"
+        f"name=Himmelblau ({distro}, {channel} {version})\n"
+        f"baseurl={base_url}\n"
+        "enabled=1\n"
+        "gpgcheck=1\n"
+        "repo_gpgcheck=1\n"
+        f"gpgkey={gpgkey_url}\n"
+    )
+
+    repo_path = rpm_dir / "himmelblau.repo"
+    repo_path.write_text(repo_content, encoding="utf-8")
+    return repo_path
+
 def rpm_repo(rpm_dir: Path):
     rpms = list(rpm_dir.glob("*.rpm"))
     if not rpms:
@@ -338,6 +398,7 @@ def rpm_repo(rpm_dir: Path):
     log(f"Generating RPM repodata in {rpm_dir} ...")
     subprocess.run([cr, "."], cwd=rpm_dir, check=True)
     sign_rpm_repo(rpm_dir)
+    create_repo_file(rpm_dir)
 
 # --- Publish ---
 def publish_per_distro(publish_root: Path, channel: str, label: str,
