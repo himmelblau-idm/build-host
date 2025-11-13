@@ -125,11 +125,44 @@ def git_show(repo: Path, ref_and_path: str) -> Optional[str]:
     except subprocess.CalledProcessError:
         return None
 
+def clean_target_packages(repo: Path):
+    """
+    Remove stray *.deb files inside target/<distro>/debian/
+    and stray *.rpm files inside target/<distro>/generate-rpm/,
+    without deleting the directories themselves.
+    """
+    target_root = repo / "target"
+    if not target_root.exists():
+        return
+
+    for distro_dir in target_root.iterdir():
+        if not distro_dir.is_dir():
+            continue
+
+        # Debian packages: target/<distro>/debian/*.deb
+        debian_dir = distro_dir / "debian"
+        if debian_dir.is_dir():
+            for deb in debian_dir.glob("*.deb"):
+                try:
+                    deb.unlink()
+                except Exception:
+                    pass
+
+        # RPM packages: target/<distro>/generate-rpm/*.rpm
+        genrpm_dir = distro_dir / "generate-rpm"
+        if genrpm_dir.is_dir():
+            for rpm in genrpm_dir.glob("*.rpm"):
+                try:
+                    rpm.unlink()
+                except Exception:
+                    pass
+
 def checkout_clean(repo: Path, ref: str):
     log(f"Checking out {ref}...")
     run(["git", "checkout", "--force", ref], cwd=repo)
     run(["git", "reset", "--hard"], cwd=repo)
     run(["git", "clean", "-fdx", "-e", "target"], cwd=repo)
+    clean_target_packages(repo)
 
 # --- Build & collect ---
 def make_package(repo: Path, env: Optional[dict]) -> int:
