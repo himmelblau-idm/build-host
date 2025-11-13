@@ -800,7 +800,7 @@ def main():
     finally:
         lock.release()
         subprocess.run(
-            ["find", "/mnt-build/repos/himmelblau", "-type", "f", "-name", "Release", "-exec", "chmod", "0644", "{}", "+"],
+            ["find", publish_root, "-type", "f", "-name", "Release", "-exec", "chmod", "0644", "{}", "+"],
             check=True
         )
 
