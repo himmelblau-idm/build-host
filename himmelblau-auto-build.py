@@ -428,13 +428,18 @@ def publish_per_distro(publish_root: Path, channel: str, label: str,
         for f in sboms:
             shutil.copy2(f, sbdir / f.name)
 
-    latest = publish_root / channel / "latest"
-    try:
-        if latest.exists() or latest.is_symlink():
-            latest.unlink()
-    except FileNotFoundError:
-        pass
-    os.symlink(label, latest)
+    # Make sure the generated repo isn't empty (due to build failure).
+    # If the build failed, we don't want to flag it as latest.
+    rpm_dir = base / "rpm"
+    deb_dir = base / "deb"
+    if rpm_dir.exists() and deb_dir.exists():
+        latest = publish_root / channel / "latest"
+        try:
+            if latest.exists() or latest.is_symlink():
+                latest.unlink()
+        except FileNotFoundError:
+            pass
+        os.symlink(label, latest)
 
 # --- Missing-distro retry helpers ---
 DISTRO_LINE_RE = re.compile(r'^\s*-\s*make\s+([a-z0-9.]+)\s*$', re.IGNORECASE | re.MULTILINE)
