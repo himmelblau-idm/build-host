@@ -52,6 +52,37 @@ GPG_EXTRA = os.environ.get("HBL_GPG_EXTRA", "")
 def log(msg: str):
     print(f"[{dt.datetime.now().isoformat(timespec='seconds')}] {msg}", flush=True)
 
+# Log file switching for separate stable/nightly logs
+_original_stdout = None
+_original_stderr = None
+_current_log_file = None
+
+def switch_log(path: Optional[Path]):
+    """Switch stdout/stderr to the specified log file, or restore to original if None."""
+    global _original_stdout, _original_stderr, _current_log_file
+
+    # Save original streams on first call
+    if _original_stdout is None:
+        _original_stdout = sys.stdout
+        _original_stderr = sys.stderr
+
+    # Close current log file if open (and not one of the originals)
+    if _current_log_file is not None:
+        try:
+            _current_log_file.close()
+        except Exception:
+            pass
+        _current_log_file = None
+
+    if path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _current_log_file = open(path, "a", buffering=1)
+        sys.stdout = _current_log_file
+        sys.stderr = _current_log_file
+    else:
+        sys.stdout = _original_stdout
+        sys.stderr = _original_stderr
+
 def run(cmd, cwd: Optional[Path] = None, check=True, capture=False, env=None):
     return subprocess.run(
         cmd, cwd=str(cwd) if cwd else None, check=check,
@@ -734,10 +765,9 @@ def main():
     ap.add_argument("--log-file", type=Path)
     args = ap.parse_args()
 
+    # Initialize logging (nightly log is the default/base log file)
     if args.log_file:
-        args.log_file.parent.mkdir(parents=True, exist_ok=True)
-        sys.stdout = open(args.log_file, "a", buffering=1)
-        sys.stderr = sys.stdout
+        switch_log(args.log_file)
 
     publish_root = args.publish_dir
     ensure_dir(publish_root)
@@ -763,12 +793,20 @@ def main():
         # Always parse expected per-distro targets from origin/main
         expected_targets = parse_per_distro_targets_via_make_help(repo)
 
-        # ===== Retry missing (stable + nightly) BEFORE planning new builds =====
+        # ===== Retry missing BEFORE planning new builds =====
         if expected_targets:
-            try:
-                retry_missing_for_stable(repo, publish_root, expected_targets)
-            except Exception as e:
-                log(f"WARN: stable retry encountered an error: {e}")
+            # Stable retry (switch to branch-specific log)
+            for branch in SUPPORTED_BRANCHES:
+                if args.log_file:
+                    switch_log(Path(str(args.log_file) + f".{branch}"))
+                try:
+                    retry_missing_for_stable(repo, publish_root, expected_targets)
+                except Exception as e:
+                    log(f"WARN: stable retry encountered an error: {e}")
+
+            # Nightly retry (switch back to base log)
+            if args.log_file:
+                switch_log(args.log_file)
             try:
                 retry_missing_for_nightly(repo, publish_root, expected_targets)
             except Exception as e:
@@ -776,6 +814,9 @@ def main():
 
         # ===== Normal stable flow (new tags) =====
         for branch in SUPPORTED_BRANCHES:
+            # Switch to branch-specific log for stable builds
+            if args.log_file:
+                switch_log(Path(str(args.log_file) + f".{branch}"))
             latest_stable = find_latest_stable_tag(repo, branch)
             if needs_bootstrap_stable(publish_root, latest_stable):
                 if latest_stable:
@@ -795,6 +836,9 @@ def main():
                     save_state(state_path, state)
 
         # ===== Normal nightly planner =====
+        # Switch back to base log for nightly builds
+        if args.log_file:
+            switch_log(args.log_file)
         should, tip2, today = plan_nightly(repo, state, args.force_daily)
         if should:
             checkout_clean(repo, "origin/main")
