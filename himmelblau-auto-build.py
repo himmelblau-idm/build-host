@@ -615,11 +615,26 @@ def retry_missing_for_stable(repo: Path, publish_root: Path, expected_targets: L
             break
     else:
         return  # Nothing published yet
+
+    # Find which stable branch contains this tag
+    stable_branch = None
+    for branch in SUPPORTED_BRANCHES:
+        if tag_on_branch(repo, latest_tag, branch):
+            stable_branch = branch
+            break
+
+    if not stable_branch:
+        log(f"WARN: tag {latest_tag} not found on any supported branch; skipping retry")
+        return
+
     missing = compute_missing_targets_in_label(publish_root, "stable", latest_tag, expected_targets)
     if not missing:
         return
-    # Build missing targets on that tag
-    checkout_clean(repo, latest_tag)
+    # Build missing targets using the branch tip (not the tag itself).
+    # This allows build fixes pushed to the branch to be picked up without
+    # requiring a new release tag.
+    log(f"Building from branch tip origin/{stable_branch} (publishing as {latest_tag})")
+    checkout_clean(repo, f"origin/{stable_branch}")
     patch_signing_keys(repo / "Makefile")
     env = os.environ.copy()
     started = time.time()
