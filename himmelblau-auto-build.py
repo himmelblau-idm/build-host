@@ -909,11 +909,18 @@ def main():
                     if rc != 0:
                         log(f"ERROR: Some builds failed for {latest_stable} (rc={rc})")
                     deb_map, rpm_map, sboms = collect_from_packaging(packaging_dir, built_since=started)
-                    publish_per_distro(publish_root, "stable", latest_stable, deb_map, rpm_map, sboms)
-                    state.setdefault("built_tags", {}).setdefault(branch, [])
-                    if latest_stable not in state["built_tags"][branch]:
-                        state["built_tags"][branch].append(latest_stable)
-                    save_state(state_path, state)
+                    has_artifacts = bool(deb_map or rpm_map or sboms)
+                    if not has_artifacts:
+                        log(f"WARN: no stable artifacts found for {latest_stable}; skipping publish/state update.")
+                    else:
+                        publish_per_distro(publish_root, "stable", latest_stable, deb_map, rpm_map, sboms)
+                        if rc == 0:
+                            state.setdefault("built_tags", {}).setdefault(branch, [])
+                            if latest_stable not in state["built_tags"][branch]:
+                                state["built_tags"][branch].append(latest_stable)
+                            save_state(state_path, state)
+                        else:
+                            log(f"WARN: stable build failed for {latest_stable}; not marking tag as built.")
 
         # ===== Normal nightly planner =====
         # Switch back to base log for nightly builds
@@ -929,10 +936,17 @@ def main():
                 log(f"ERROR: Some nightly builds failed (rc={rc})")
             deb_map, rpm_map, sboms = collect_from_packaging(packaging_dir, built_since=started)
             label = f"{today}-{(tip2 or 'unknown')[:12]}"
-            publish_per_distro(publish_root, "nightly", label, deb_map, rpm_map, sboms)
-            state.setdefault("nightly", {})["last_commit"] = tip2
-            state["nightly"]["last_date"] = today
-            save_state(state_path, state)
+            has_artifacts = bool(deb_map or rpm_map or sboms)
+            if not has_artifacts:
+                log("WARN: no nightly artifacts found; skipping publish/state update.")
+            else:
+                publish_per_distro(publish_root, "nightly", label, deb_map, rpm_map, sboms)
+                if rc == 0:
+                    state.setdefault("nightly", {})["last_commit"] = tip2
+                    state["nightly"]["last_date"] = today
+                    save_state(state_path, state)
+                else:
+                    log("WARN: nightly build failed; not marking commit as built.")
 
         log("Done.")
         return 0
