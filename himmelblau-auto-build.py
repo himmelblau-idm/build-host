@@ -280,9 +280,8 @@ def apt_flat_repo(deb_dir: Path, channel: str):
     local_aptft = SCRIPT_DIR / "bin" / "apt-ftparchive"
     if local_aptft.is_file() and os.access(local_aptft, os.X_OK):
         aptft_candidates.append(str(local_aptft))
-    aptft_path = shutil.which("apt-ftparchive")
-    if aptft_path:
-        aptft_candidates.append(aptft_path)
+    if shutil.which("apt-ftparchive"):
+        aptft_candidates.append(shutil.which("apt-ftparchive"))
     if APTFTPARCHIVE_ENV:
         aptft_candidates.append(APTFTPARCHIVE_ENV)
 
@@ -313,9 +312,6 @@ def apt_flat_repo(deb_dir: Path, channel: str):
         with open(packages, "wb") as outf:
             subprocess.run([scan, ".", "/dev/null"], cwd=deb_dir, check=True, stdout=outf)
     else:
-        if not aptft:
-            log(f"INFO: apt-ftparchive not found; skipping APT metadata in {deb_dir}.")
-            return
         with open(packages, "wb") as outf:
             subprocess.run([aptft, "packages", "."], cwd=deb_dir, check=True, stdout=outf)
 
@@ -390,8 +386,7 @@ def apt_flat_repo(deb_dir: Path, channel: str):
 def sign_rpm_repo(rpm_dir: Path):
     gpg = which("gpg")
     if not gpg:
-        log(f"INFO: gpg not found; skipping signing RPM repo {rpm_dir}.")
-        return
+        log("INFO: gpg not found; skipping signing RPM repo {rpm_dir}.")
     repodata = rpm_dir / "repodata"
     log(f"Signing RPM repo in {repodata} ...")
     subprocess.run([gpg, "--detach-sign", "--armor", "repomd.xml"], cwd=repodata, check=True)
@@ -512,87 +507,12 @@ def publish_per_distro(publish_root: Path, channel: str, label: str,
 
 # --- Missing-distro retry helpers ---
 DISTRO_LINE_RE = re.compile(r'^\s*-\s*make\s+([a-z0-9.]+)\s*$', re.IGNORECASE | re.MULTILINE)
-MAKE_VAR_ASSIGN_RE = re.compile(r'^\s*([A-Z0-9_]+)\s*([:+]?=)\s*(.*)$')
-MAKE_VAR_REF_RE = re.compile(r'^\$\(([^)]+)\)$|^\$\{([^}]+)\}$')
-
-def _split_makefile_logical_lines(text: str) -> List[str]:
-    lines: List[str] = []
-    buf = ""
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].rstrip()
-        if not line:
-            continue
-        if line.endswith("\\"):
-            buf += line[:-1] + " "
-            continue
-        buf += line
-        lines.append(buf)
-        buf = ""
-    if buf:
-        lines.append(buf)
-    return lines
-
-def _expand_make_vars(tokens: List[str], vars_map: Dict[str, List[str]], stack: Optional[List[str]] = None) -> List[str]:
-    if stack is None:
-        stack = []
-    expanded: List[str] = []
-    for tok in tokens:
-        m = MAKE_VAR_REF_RE.match(tok)
-        if not m:
-            expanded.append(tok)
-            continue
-        ref = m.group(1) or m.group(2) or ""
-        if not ref or ref in stack:
-            continue
-        expanded.extend(_expand_make_vars(vars_map.get(ref, []), vars_map, stack + [ref]))
-    return expanded
-
-def parse_per_distro_targets_from_makefile(makefile_text: str) -> List[str]:
-    vars_map: Dict[str, List[str]] = {}
-    for line in _split_makefile_logical_lines(makefile_text):
-        m = MAKE_VAR_ASSIGN_RE.match(line)
-        if not m:
-            continue
-        name, op, value = m.groups()
-        if not (name.endswith("_TARGETS") or name == "ALL_PACKAGE_TARGETS"):
-            continue
-        tokens = value.split()
-        if op == "+=" and name in vars_map:
-            vars_map[name].extend(tokens)
-        else:
-            vars_map[name] = tokens
-
-    if "ALL_PACKAGE_TARGETS" in vars_map:
-        raw_targets = _expand_make_vars(vars_map["ALL_PACKAGE_TARGETS"], vars_map)
-    else:
-        raw_targets = []
-        for group in ["DEB_TARGETS", "RPM_TARGETS", "SLE_TARGETS", "GENTOO_TARGETS"]:
-            raw_targets.extend(_expand_make_vars(vars_map.get(group, []), vars_map))
-
-    targets: List[str] = []
-    seen = set()
-    for t in raw_targets:
-        if not re.match(r"^[a-z0-9.]+$", t):
-            continue
-        if t not in seen:
-            targets.append(t)
-            seen.add(t)
-    return targets
 
 def parse_per_distro_targets_via_make_help(repo: Path) -> List[str]:
     """
-    First try parsing target lists directly from origin/main:Makefile (no checkout).
-    If that fails, checkout origin/main, run `make help`, parse the 'Per-distro' lines,
+    Checkout origin/main, run `make help`, parse the generated 'Per-distro' target lines,
     then restore the previous HEAD. If anything fails, return [].
     """
-    makefile_text = git_show(repo, "origin/main:Makefile")
-    if makefile_text:
-        targets = parse_per_distro_targets_from_makefile(makefile_text)
-        if targets:
-            log(f"Parsed {len(targets)} per-distro targets from origin/main:Makefile.")
-            return targets
-        log("WARN: Makefile target parse failed; falling back to `make help`.")
-
     # Remember where we started
     try:
         current_head = git_rev_parse(repo, "HEAD")
