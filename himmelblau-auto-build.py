@@ -770,9 +770,24 @@ def resolve_nightly_latest_label(publish_root: Path) -> Optional[str]:
             return sorted(labels, reverse=True)[0]
     return None
 
+def nightly_label_commit_prefix(label: str) -> Optional[str]:
+    if not label:
+        return None
+    if "-" not in label:
+        return None
+    _, commit_prefix = label.rsplit("-", 1)
+    if not commit_prefix or commit_prefix == "unknown":
+        return None
+    return commit_prefix
+
 def retry_missing_for_nightly(repo: Path, publish_root: Path, expected_targets: List[str]):
     label = resolve_nightly_latest_label(publish_root)
     if not label:
+        return
+    tip = git_rev_parse(repo, "origin/main")
+    label_prefix = nightly_label_commit_prefix(label)
+    if label_prefix and tip and not tip.startswith(label_prefix):
+        log(f"Nightly retry skipped: latest label {label} is behind origin/main ({tip[:12]}).")
         return
     missing = compute_missing_targets_in_label(publish_root, "nightly", label, expected_targets)
     if not missing:
