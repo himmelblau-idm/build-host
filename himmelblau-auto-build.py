@@ -496,7 +496,7 @@ def publish_per_distro(publish_root: Path, channel: str, label: str,
     # If the build failed, we don't want to flag it as latest.
     rpm_dir = base / "rpm"
     deb_dir = base / "deb"
-    if rpm_dir.exists() and deb_dir.exists():
+    if rpm_dir.exists() or deb_dir.exists():
         latest = publish_root / channel / "latest"
         try:
             if latest.exists() or latest.is_symlink():
