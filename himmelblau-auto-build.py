@@ -35,7 +35,7 @@ import tempfile
 
 DEFAULT_REPO_DIR = Path.home() / "code" / "himmelblau"
 DEFAULT_PUBLISH_DIR = Path("/srv/repos/himmelblau")
-SUPPORTED_BRANCHES = ["stable-2.x"]
+SUPPORTED_BRANCHES = ["stable-3.x"]
 STATE_FILE = ".build_state.json"
 LOCK_FILE = ".build_lock"
 PACKAGING_DIR = "packaging"
