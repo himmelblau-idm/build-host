@@ -551,7 +551,8 @@ def parse_per_distro_targets_via_make_help(repo: Path) -> List[str]:
             except Exception as e:
                 log(f"WARN: failed to restore previous HEAD after make help: {e}")
 
-    return targets
+    # Skip building on gentoo
+    return [t for t in targets if t != "gentoo"]
 
 def target_is_deb(t: str) -> bool:
     return t.startswith("ubuntu") or t.startswith("debian")
