@@ -3,8 +3,6 @@
 Automates **community builds** of Himmelblau and publishes distro repositories (apt/dnf/zypper) to a web root you host (e.g., Nginx).
 This repo wraps a few containerized helpers (notably `apt-ftparchive`) and a Python driver that builds, signs (if configured), and (re)indexes repos.
 
-> ⚠️ Private for now because it’s still scrappy/AI-assisted slop (even this README!). It works and it’s fast, but expect rough edges.
-
 ---
 
 ## TL;DR (Quick start)
