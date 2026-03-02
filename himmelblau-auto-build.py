@@ -640,7 +640,7 @@ def make_sign_rpms(repo: Path, env: Optional[dict]) -> int:
 def retry_missing_for_stable(repo: Path, publish_root: Path, expected_targets: List[str]):
     # Discover the latest stable tag that already has a publish dir (or symlink).
     tags = sorted([t for t in git_list_tags(repo) if STABLE_TAG_RE.match(t)], key=version.parse, reverse=True)
-    for t in tags:
+    for t in [t for t in tags if "beta" not in t and "alpha" not in t]:
         label_dir = publish_root / "stable" / t
         if label_dir.exists():
             latest_tag = t
