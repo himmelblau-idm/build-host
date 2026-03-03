@@ -591,34 +591,25 @@ def parse_per_distro_targets_via_make_help(repo: Path) -> Tuple[List[str], List[
     return ([t for t in targets if t != "gentoo"], [t for t in arm64_targets if t != "gentoo"])
 
 def target_is_deb(t: str) -> bool:
-    return t.startswith("ubuntu") or t.startswith("debian")
+    distro = t.removeprefix("arm64-")
+    return distro.startswith("ubuntu") or distro.startswith("debian")
 
-def arm64_target_is_deb(t: str) -> bool:
-    return target_is_deb(t.removeprefix("arm64-"))
-
-def published_has_any_pkgs(base: Path, t: str) -> bool:
+def published_has_pkgs(base: Path, t: str) -> bool:
     """
     Returns True if the publish dir already contains at least one artifact for target t.
+    Targets prefixed with 'arm64-' are checked for arm64-specific artifacts;
+    all other targets are checked for amd64-specific artifacts.
     """
-    if target_is_deb(t):
-        d = base / "deb" / t
-        return d.is_dir() and any(d.glob("*.deb"))
-    else:
-        d = base / "rpm" / t
-        return d.is_dir() and any(d.glob("*.rpm"))
-
-def published_has_arm64_pkgs(base: Path, t: str) -> bool:
-    """
-    Returns True if the publish dir already contains at least one arm64 artifact for
-    arm64 target t (e.g. 'arm64-ubuntu22.04').
-    """
+    is_arm64 = t.startswith("arm64-")
     distro = t.removeprefix("arm64-")
-    if arm64_target_is_deb(t):
+    if target_is_deb(t):
         d = base / "deb" / distro
-        return d.is_dir() and any(d.glob("*_arm64.deb"))
+        pattern = "*_arm64.deb" if is_arm64 else "*_amd64.deb"
+        return d.is_dir() and any(d.glob(pattern))
     else:
         d = base / "rpm" / distro
-        return d.is_dir() and any(d.glob("*.aarch64.rpm"))
+        pattern = "*.aarch64.rpm" if is_arm64 else "*.x86_64.rpm"
+        return d.is_dir() and any(d.glob(pattern))
 
 def compute_missing_targets_in_label(publish_root: Path, channel: str, label: str, expected_targets: List[str]) -> List[str]:
     base = publish_root / channel / label
@@ -626,26 +617,12 @@ def compute_missing_targets_in_label(publish_root: Path, channel: str, label: st
         return []
     missing: List[str] = []
     for t in expected_targets:
-        if not published_has_any_pkgs(base, t):
+        if not published_has_pkgs(base, t):
             missing.append(t)
     if missing:
         log(f"{channel}/{label}: missing {len(missing)} targets -> {', '.join(missing)}")
     else:
         log(f"{channel}/{label}: no missing targets.")
-    return missing
-
-def compute_missing_arm64_targets_in_label(publish_root: Path, channel: str, label: str, arm64_targets: List[str]) -> List[str]:
-    base = publish_root / channel / label
-    if not base.exists():
-        return []
-    missing: List[str] = []
-    for t in arm64_targets:
-        if not published_has_arm64_pkgs(base, t):
-            missing.append(t)
-    if missing:
-        log(f"{channel}/{label}: missing {len(missing)} arm64 targets -> {', '.join(missing)}")
-    else:
-        log(f"{channel}/{label}: no missing arm64 targets.")
     return missing
 
 def publish_incremental(publish_root: Path, channel: str, label: str,
@@ -788,61 +765,6 @@ def retry_missing_for_nightly(repo: Path, publish_root: Path, expected_targets: 
     deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR, built_since=started)
     publish_incremental(publish_root, "nightly", label, deb_map, rpm_map, sboms)
 
-def retry_missing_arm64_for_stable(repo: Path, publish_root: Path, arm64_targets: List[str]):
-    tags = sorted([t for t in git_list_tags(repo) if STABLE_TAG_RE.match(t)], key=version.parse, reverse=True)
-    for t in [t for t in tags if "beta" not in t and "alpha" not in t]:
-        label_dir = publish_root / "stable" / t
-        if label_dir.exists():
-            latest_tag = t
-            break
-    else:
-        return  # Nothing published yet
-
-    stable_branch = None
-    for branch in SUPPORTED_BRANCHES:
-        if tag_on_branch(repo, latest_tag, branch):
-            stable_branch = branch
-            break
-
-    if not stable_branch:
-        log(f"WARN: tag {latest_tag} not found on any supported branch; skipping arm64 retry")
-        return
-
-    missing = compute_missing_arm64_targets_in_label(publish_root, "stable", latest_tag, arm64_targets)
-    if not missing:
-        return
-    log(f"Building arm64 from branch tip origin/{stable_branch} (publishing as {latest_tag})")
-    checkout_clean(repo, f"origin/{stable_branch}")
-    patch_signing_keys(repo / "Makefile")
-    env = os.environ.copy()
-    started = time.time()
-    for tgt in missing:
-        make_target(repo, tgt, env)
-    make_sign_rpms(repo, env)
-    deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR, built_since=started)
-    publish_incremental(publish_root, "stable", latest_tag, deb_map, rpm_map, sboms)
-
-def retry_missing_arm64_for_nightly(repo: Path, publish_root: Path, arm64_targets: List[str]):
-    label = resolve_nightly_latest_label(publish_root)
-    if not label:
-        return
-    tip = git_rev_parse(repo, "origin/main")
-    label_prefix = nightly_label_commit_prefix(label)
-    if label_prefix and tip and not tip.startswith(label_prefix):
-        log(f"Nightly arm64 retry skipped: latest label {label} is behind origin/main ({tip[:12]}).")
-        return
-    missing = compute_missing_arm64_targets_in_label(publish_root, "nightly", label, arm64_targets)
-    if not missing:
-        return
-    # Build missing arm64 targets from origin/main
-    checkout_clean(repo, "origin/main")
-    env = os.environ.copy()
-    started = time.time()
-    for tgt in missing:
-        make_target(repo, tgt, env)
-    deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR, built_since=started)
-    publish_incremental(publish_root, "nightly", label, deb_map, rpm_map, sboms)
-
 # --- Planning + bootstrap helpers ---
 def find_latest_stable_tag(repo: Path, branch: str) -> Optional[str]:
     candidates = [t for t in git_list_tags(repo) if STABLE_TAG_RE.match(t) and tag_on_branch(repo, t, branch)]
@@ -950,20 +872,19 @@ def main():
                 log(f"WARN: nightly retry encountered an error: {e}")
 
         if arm64_targets:
-            # ARM64 stable retry
-            for branch in SUPPORTED_BRANCHES:
-                if args.log_file:
-                    switch_log(Path(str(args.log_file) + f".{branch}"))
-                try:
-                    retry_missing_arm64_for_stable(repo, publish_root, arm64_targets)
-                except Exception as e:
-                    log(f"WARN: arm64 stable retry encountered an error: {e}")
+            # ARM64 stable retry (single run; function determines applicable stable branch)
+            if args.log_file:
+                switch_log(Path(str(args.log_file) + f".{SUPPORTED_BRANCHES[0]}"))
+            try:
+                retry_missing_for_stable(repo, publish_root, arm64_targets)
+            except Exception as e:
+                log(f"WARN: arm64 stable retry encountered an error: {e}")
 
             # ARM64 nightly retry
             if args.log_file:
                 switch_log(args.log_file)
             try:
-                retry_missing_arm64_for_nightly(repo, publish_root, arm64_targets)
+                retry_missing_for_nightly(repo, publish_root, arm64_targets)
             except Exception as e:
                 log(f"WARN: arm64 nightly retry encountered an error: {e}")
 
