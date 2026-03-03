@@ -42,7 +42,7 @@ PACKAGING_DIR = "packaging"
 
 STABLE_TAG_RE = re.compile(r'^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')
 
-DEB_RE = re.compile(r"""(?xi)^.*(?P<ver>\d+\.\d+\.\d+)-(?P<distro>[a-z0-9.]+)_amd64\.deb$""")
+DEB_RE = re.compile(r"""(?xi)^.*(?P<ver>\d+\.\d+\.\d+)-(?P<distro>[a-z0-9.]+)_(?:amd64|arm64)\.deb$""")
 RPM_RE = re.compile(r"""(?xi).*- (?P<distro>fedora\d+|rawhide|rocky\d+|leap\d(?:\.\d)?|tumbleweed|sle\d+sp\d+|sle\d{2}|amzn\d+) \.rpm$""")
 
 GPG_KEYID = os.environ.get("HBL_GPG_KEYID")
@@ -204,6 +204,14 @@ def make_package(repo: Path, env: Optional[dict]) -> int:
     except subprocess.CalledProcessError as e:
         return e.returncode
 
+def make_arm64(repo: Path, env: Optional[dict]) -> int:
+    log("Running: make arm64")
+    try:
+        run(["/usr/bin/make", "arm64"], cwd=repo, env=env)
+        return 0
+    except subprocess.CalledProcessError as e:
+        return e.returncode
+
 def make_target(repo: Path, target: str, env: Optional[dict]) -> int:
     try:
         log(f"Running: make {target}")
@@ -326,6 +334,16 @@ def apt_flat_repo(deb_dir: Path, channel: str):
         pass
 
     date_str = dt.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
+    archs = set()
+    for deb in debs:
+        if "_amd64.deb" in deb.name:
+            archs.add("amd64")
+        elif "_arm64.deb" in deb.name:
+            archs.add("arm64")
+    if not archs:
+        log(f"WARN: could not detect architecture from DEB filenames in {deb_dir}; defaulting to amd64")
+        archs.add("amd64")
+    archs_str = " ".join(sorted(archs))
     tmp_fd, tmp_path = tempfile.mkstemp(dir=str(deb_dir))
     try:
         with os.fdopen(tmp_fd, "wb") as tmp:
@@ -334,7 +352,7 @@ def apt_flat_repo(deb_dir: Path, channel: str):
                 "Label: Himmelblau\n"
                 f"Suite: {channel}\n"
                 f"Codename: {deb_dir.name}\n"
-                "Architectures: amd64\n"
+                f"Architectures: {archs_str}\n"
                 "Components: main\n"
                 f"Date: {date_str}\n"
             ).encode("utf-8")
@@ -507,11 +525,13 @@ def publish_per_distro(publish_root: Path, channel: str, label: str,
 
 # --- Missing-distro retry helpers ---
 DISTRO_LINE_RE = re.compile(r'^\s*-\s*make\s+([a-z0-9.]+)\s*$', re.IGNORECASE | re.MULTILINE)
+ARM64_SUPPORTED_RE = re.compile(r'\barm64-([a-z0-9.]+)\b')
 
-def parse_per_distro_targets_via_make_help(repo: Path) -> List[str]:
+def parse_per_distro_targets_via_make_help(repo: Path) -> Tuple[List[str], List[str]]:
     """
-    Checkout origin/main, run `make help`, parse the generated 'Per-distro' target lines,
-    then restore the previous HEAD. If anything fails, return [].
+    Checkout origin/main, run `make help`, parse both the 'Per-distro' target lines
+    and the ARM64 'Supported:' targets, then restore the previous HEAD.
+    Returns (per_distro_targets, arm64_targets). Returns ([], []) on failure.
     """
     # Remember where we started
     try:
@@ -520,6 +540,7 @@ def parse_per_distro_targets_via_make_help(repo: Path) -> List[str]:
         current_head = None
 
     targets: List[str] = []
+    arm64_targets: List[str] = []
     try:
         # ensure we use the Makefile as it exists on main
         checkout_clean(repo, "origin/main")
@@ -539,6 +560,21 @@ def parse_per_distro_targets_via_make_help(repo: Path) -> List[str]:
             log(f"Parsed {len(targets)} per-distro targets from `make help` on origin/main.")
         else:
             log("WARN: no per-distro targets found in `make help` output.")
+
+        # Parse ARM64 targets from the 'Supported: arm64-...' line
+        arm64_seen = set()
+        for line in txt.splitlines():
+            if "Supported:" in line:
+                for distro in ARM64_SUPPORTED_RE.findall(line):
+                    tgt = f"arm64-{distro}"
+                    if tgt not in arm64_seen:
+                        arm64_targets.append(tgt)
+                        arm64_seen.add(tgt)
+
+        if arm64_targets:
+            log(f"Parsed {len(arm64_targets)} arm64 targets from `make help` on origin/main.")
+        else:
+            log("WARN: no arm64 targets found in `make help` output.")
     except subprocess.CalledProcessError as e:
         log(f"WARN: `make help` failed (rc={e.returncode}); cannot determine per-distro targets.")
     except Exception as e:
@@ -552,10 +588,13 @@ def parse_per_distro_targets_via_make_help(repo: Path) -> List[str]:
                 log(f"WARN: failed to restore previous HEAD after make help: {e}")
 
     # Skip building on gentoo
-    return [t for t in targets if t != "gentoo"]
+    return ([t for t in targets if t != "gentoo"], arm64_targets)
 
 def target_is_deb(t: str) -> bool:
     return t.startswith("ubuntu") or t.startswith("debian")
+
+def arm64_target_is_deb(t: str) -> bool:
+    return target_is_deb(t.removeprefix("arm64-"))
 
 def published_has_any_pkgs(base: Path, t: str) -> bool:
     """
@@ -567,6 +606,19 @@ def published_has_any_pkgs(base: Path, t: str) -> bool:
     else:
         d = base / "rpm" / t
         return d.is_dir() and any(d.glob("*.rpm"))
+
+def published_has_arm64_pkgs(base: Path, t: str) -> bool:
+    """
+    Returns True if the publish dir already contains at least one arm64 artifact for
+    arm64 target t (e.g. 'arm64-ubuntu22.04').
+    """
+    distro = t.removeprefix("arm64-")
+    if arm64_target_is_deb(t):
+        d = base / "deb" / distro
+        return d.is_dir() and any(d.glob("*_arm64.deb"))
+    else:
+        d = base / "rpm" / distro
+        return d.is_dir() and any(d.glob("*.aarch64.rpm"))
 
 def compute_missing_targets_in_label(publish_root: Path, channel: str, label: str, expected_targets: List[str]) -> List[str]:
     base = publish_root / channel / label
@@ -580,6 +632,20 @@ def compute_missing_targets_in_label(publish_root: Path, channel: str, label: st
         log(f"{channel}/{label}: missing {len(missing)} targets -> {', '.join(missing)}")
     else:
         log(f"{channel}/{label}: no missing targets.")
+    return missing
+
+def compute_missing_arm64_targets_in_label(publish_root: Path, channel: str, label: str, arm64_targets: List[str]) -> List[str]:
+    base = publish_root / channel / label
+    if not base.exists():
+        return []
+    missing: List[str] = []
+    for t in arm64_targets:
+        if not published_has_arm64_pkgs(base, t):
+            missing.append(t)
+    if missing:
+        log(f"{channel}/{label}: missing {len(missing)} arm64 targets -> {', '.join(missing)}")
+    else:
+        log(f"{channel}/{label}: no missing arm64 targets.")
     return missing
 
 def publish_incremental(publish_root: Path, channel: str, label: str,
@@ -722,6 +788,61 @@ def retry_missing_for_nightly(repo: Path, publish_root: Path, expected_targets: 
     deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR, built_since=started)
     publish_incremental(publish_root, "nightly", label, deb_map, rpm_map, sboms)
 
+def retry_missing_arm64_for_stable(repo: Path, publish_root: Path, arm64_targets: List[str]):
+    tags = sorted([t for t in git_list_tags(repo) if STABLE_TAG_RE.match(t)], key=version.parse, reverse=True)
+    for t in [t for t in tags if "beta" not in t and "alpha" not in t]:
+        label_dir = publish_root / "stable" / t
+        if label_dir.exists():
+            latest_tag = t
+            break
+    else:
+        return  # Nothing published yet
+
+    stable_branch = None
+    for branch in SUPPORTED_BRANCHES:
+        if tag_on_branch(repo, latest_tag, branch):
+            stable_branch = branch
+            break
+
+    if not stable_branch:
+        log(f"WARN: tag {latest_tag} not found on any supported branch; skipping arm64 retry")
+        return
+
+    missing = compute_missing_arm64_targets_in_label(publish_root, "stable", latest_tag, arm64_targets)
+    if not missing:
+        return
+    log(f"Building arm64 from branch tip origin/{stable_branch} (publishing as {latest_tag})")
+    checkout_clean(repo, f"origin/{stable_branch}")
+    patch_signing_keys(repo / "Makefile")
+    env = os.environ.copy()
+    started = time.time()
+    for tgt in missing:
+        make_target(repo, tgt, env)
+    make_sign_rpms(repo, env)
+    deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR, built_since=started)
+    publish_incremental(publish_root, "stable", latest_tag, deb_map, rpm_map, sboms)
+
+def retry_missing_arm64_for_nightly(repo: Path, publish_root: Path, arm64_targets: List[str]):
+    label = resolve_nightly_latest_label(publish_root)
+    if not label:
+        return
+    tip = git_rev_parse(repo, "origin/main")
+    label_prefix = nightly_label_commit_prefix(label)
+    if label_prefix and tip and not tip.startswith(label_prefix):
+        log(f"Nightly arm64 retry skipped: latest label {label} is behind origin/main ({tip[:12]}).")
+        return
+    missing = compute_missing_arm64_targets_in_label(publish_root, "nightly", label, arm64_targets)
+    if not missing:
+        return
+    # Build missing arm64 targets from origin/main
+    checkout_clean(repo, "origin/main")
+    env = os.environ.copy()
+    started = time.time()
+    for tgt in missing:
+        make_target(repo, tgt, env)
+    deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR, built_since=started)
+    publish_incremental(publish_root, "nightly", label, deb_map, rpm_map, sboms)
+
 # --- Planning + bootstrap helpers ---
 def find_latest_stable_tag(repo: Path, branch: str) -> Optional[str]:
     candidates = [t for t in git_list_tags(repo) if STABLE_TAG_RE.match(t) and tag_on_branch(repo, t, branch)]
@@ -807,7 +928,7 @@ def main():
         git_fetch_all(repo)
 
         # Always parse expected per-distro targets from origin/main
-        expected_targets = parse_per_distro_targets_via_make_help(repo)
+        expected_targets, arm64_targets = parse_per_distro_targets_via_make_help(repo)
 
         # ===== Retry missing BEFORE planning new builds =====
         if expected_targets:
@@ -828,6 +949,24 @@ def main():
             except Exception as e:
                 log(f"WARN: nightly retry encountered an error: {e}")
 
+        if arm64_targets:
+            # ARM64 stable retry
+            for branch in SUPPORTED_BRANCHES:
+                if args.log_file:
+                    switch_log(Path(str(args.log_file) + f".{branch}"))
+                try:
+                    retry_missing_arm64_for_stable(repo, publish_root, arm64_targets)
+                except Exception as e:
+                    log(f"WARN: arm64 stable retry encountered an error: {e}")
+
+            # ARM64 nightly retry
+            if args.log_file:
+                switch_log(args.log_file)
+            try:
+                retry_missing_arm64_for_nightly(repo, publish_root, arm64_targets)
+            except Exception as e:
+                log(f"WARN: arm64 nightly retry encountered an error: {e}")
+
         # ===== Normal stable flow (new tags) =====
         for branch in SUPPORTED_BRANCHES:
             # Switch to branch-specific log for stable builds
@@ -844,6 +983,9 @@ def main():
                     rc = make_package(repo, env)
                     if rc != 0:
                         log(f"ERROR: Some builds failed for {latest_stable} (rc={rc})")
+                    rc_arm64 = make_arm64(repo, env)
+                    if rc_arm64 != 0:
+                        log(f"ERROR: Some arm64 builds failed for {latest_stable} (rc={rc_arm64})")
                     deb_map, rpm_map, sboms = collect_from_packaging(packaging_dir, built_since=started)
                     has_artifacts = bool(deb_map or rpm_map or sboms)
                     if not has_artifacts:
@@ -870,6 +1012,9 @@ def main():
             rc = make_package(repo, env)
             if rc != 0:
                 log(f"ERROR: Some nightly builds failed (rc={rc})")
+            rc_arm64 = make_arm64(repo, env)
+            if rc_arm64 != 0:
+                log(f"ERROR: Some nightly arm64 builds failed (rc={rc_arm64})")
             deb_map, rpm_map, sboms = collect_from_packaging(packaging_dir, built_since=started)
             label = f"{today}-{(tip2 or 'unknown')[:12]}"
             has_artifacts = bool(deb_map or rpm_map or sboms)
