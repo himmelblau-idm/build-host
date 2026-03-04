@@ -591,7 +591,7 @@ def parse_per_distro_targets_via_make_help(repo: Path) -> Tuple[List[str], List[
     return ([t for t in targets if t != "gentoo"], [t for t in arm64_targets if t != "gentoo"])
 
 def target_is_deb(t: str) -> bool:
-    distro = t.removeprefix("arm64-")
+    distro = t[len("arm64-"):] if t.startswith("arm64-") else t
     return distro.startswith("ubuntu") or distro.startswith("debian")
 
 def published_has_pkgs(base: Path, t: str) -> bool:
@@ -601,7 +601,7 @@ def published_has_pkgs(base: Path, t: str) -> bool:
     all other targets are checked for amd64-specific artifacts.
     """
     is_arm64 = t.startswith("arm64-")
-    distro = t.removeprefix("arm64-")
+    distro = t[len("arm64-"):] if is_arm64 else t
     if target_is_deb(t):
         d = base / "deb" / distro
         pattern = "*_arm64.deb" if is_arm64 else "*_amd64.deb"
