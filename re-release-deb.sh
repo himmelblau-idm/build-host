@@ -11,6 +11,19 @@ pushd $REPO
 dpkg-scanpackages . /dev/null > ./Packages
 gzip -n -c "./Packages" > ./Packages.gz
 
+# Detect architectures from .deb filenames present in the directory
+ARCHS=""
+if ls ./*_amd64.deb >/dev/null 2>&1; then
+  ARCHS="amd64"
+fi
+if ls ./*_arm64.deb >/dev/null 2>&1; then
+  ARCHS="arm64"
+fi
+if [ -z "$ARCHS" ]; then
+  echo "WARN: no .deb files found in $REPO; defaulting Architectures to amd64" >&2
+  ARCHS="amd64"
+fi
+
 rm -f "$REPO/Release"
 tmp=$(mktemp)
 {
@@ -18,9 +31,8 @@ tmp=$(mktemp)
   printf 'Label: Himmelblau\n'
   printf 'Suite: %s\n' "$SUITE"
   printf 'Codename: %s\n' "$CODENAME"
-  printf 'Architectures: amd64\n'
+  printf 'Architectures: %s\n' "$ARCHS"
   printf 'Components: main\n'
-  printf 'Date: %s\n' "$(date -Ru)"
   $APTFTPARCHIVE release .
 } > "$tmp"
 mv "$tmp" "$REPO/Release"
