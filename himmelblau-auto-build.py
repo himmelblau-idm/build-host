@@ -332,7 +332,7 @@ def apt_flat_repo(deb_dir: Path, channel: str):
 
     # Prefer ./bin/apt-ftparchive (next to the build script),
     # then PATH, then env
-    aptft_candidates: list[str] = []
+    aptft_candidates: List[str] = []
     local_aptft = SCRIPT_DIR / "bin" / "apt-ftparchive"
     if local_aptft.is_file() and os.access(local_aptft, os.X_OK):
         aptft_candidates.append(str(local_aptft))
