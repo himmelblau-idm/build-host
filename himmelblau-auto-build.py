@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Himmelblau autobuilder/publisher (per-distro DEB/RPM repos) with bootstrap + missing-distro retries
+Himmelblau autobuilder/publisher (per-distro DEB/RPM repos)
+with bootstrap + missing-distro retries
 
 - Repo: ~/code/himmelblau (override with --repo-dir)
 - Artifacts: <repo>/packaging/ (DEBs, RPMs, optional SBOMs)
@@ -10,13 +11,15 @@ Himmelblau autobuilder/publisher (per-distro DEB/RPM repos) with bootstrap + mis
     stable/<tag>/rpm/<distro>/*.rpm  + repodata/
     nightly/<YYYY-MM-DD>-<commit>/(deb|rpm)/<distro>/...
     .../sbom/
-- Bootstrap: if stable/nightly not yet present in --publish-dir, build & publish
-  the latest stable tag (reachable from stable-2.x) and a nightly from main.
+- Bootstrap: if stable/nightly not yet present in --publish-dir, build
+  & publish the latest stable tag (reachable from stable-2.x)
+  and a nightly from main.
 - Optional APT Release signing if HBL_GPG_KEYID is set.
 - On every run, before planning new builds, we:
   * Parse 'Per-distro' targets from origin/main:Makefile
   * Detect missing distros in stable/<latest_tag> and nightly/<latest_label>
-  * Rebuild ONLY those missing distros (make <target>) and publish incrementally
+  * Rebuild ONLY those missing distros (make <target>)
+    and publish incrementally
 """
 
 import argparse
@@ -40,25 +43,36 @@ STATE_FILE = ".build_state.json"
 LOCK_FILE = ".build_lock"
 PACKAGING_DIR = "packaging"
 
-STABLE_TAG_RE = re.compile(r'^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')
+STABLE_TAG_RE = re.compile(
+    r'^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+)
 
-DEB_RE = re.compile(r"""(?xi)^.*(?P<ver>\d+\.\d+\.\d+)-(?P<distro>[a-z0-9.]+)_(?P<arch>amd64|arm64)\.deb$""")
-RPM_RE = re.compile(r"""(?xi).*- (?P<distro>fedora\d+|rawhide|rocky\d+|leap\d(?:\.\d)?|tumbleweed|sle\d+sp\d+|sle\d{2}|amzn\d+) \.rpm$""")
+DEB_RE = re.compile(r"(?xi)^.*(?P<ver>\d+\.\d+\.\d+)-"
+                    r"(?P<distro>[a-z0-9.]+)_"
+                    r"(?P<arch>amd64|arm64)\.deb$")
+RPM_RE = re.compile(r"(?xi).*-"
+                    r"(?P<distro>fedora\d+|rawhide|rocky\d+|leap\d(?:\.\d)?"
+                    r"|tumbleweed|sle\d+sp\d+|sle\d{2}|amzn\d+)\.rpm$")
 
 GPG_KEYID = os.environ.get("HBL_GPG_KEYID")
 GPG_HOMEDIR = os.environ.get("HBL_GPG_HOMEDIR")
 GPG_EXTRA = os.environ.get("HBL_GPG_EXTRA", "")
 
+
 def log(msg: str):
-    print(f"[{dt.datetime.now().isoformat(timespec='seconds')}] {msg}", flush=True)
+    print(f"[{dt.datetime.now().isoformat(timespec='seconds')}] {msg}",
+          flush=True)
+
 
 # Log file switching for separate stable/nightly logs
 _original_stdout = None
 _original_stderr = None
 _current_log_file = None
 
+
 def switch_log(path: Optional[Path]):
-    """Switch stdout/stderr to the specified log file, or restore to original if None."""
+    """Switch stdout/stderr to the specified log file,
+    or restore to original if None."""
     global _original_stdout, _original_stderr, _current_log_file
 
     # Save original streams on first call
@@ -83,6 +97,7 @@ def switch_log(path: Optional[Path]):
         sys.stdout = _original_stdout
         sys.stderr = _original_stderr
 
+
 def run(cmd, cwd: Optional[Path] = None, check=True, capture=False, env=None):
     return subprocess.run(
         cmd, cwd=str(cwd) if cwd else None, check=check,
@@ -91,14 +106,18 @@ def run(cmd, cwd: Optional[Path] = None, check=True, capture=False, env=None):
         env=env
     )
 
+
 def which(name: str) -> Optional[str]:
     return shutil.which(name)
+
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
+
 def utc_today() -> str:
     return dt.datetime.utcnow().strftime("%Y-%m-%d")
+
 
 def load_state(path: Path) -> Dict:
     if path.exists():
@@ -108,19 +127,23 @@ def load_state(path: Path) -> Dict:
             path.rename(path.with_suffix(".corrupt.bak"))
     return {"built_tags": {}, "nightly": {}}
 
+
 def save_state(path: Path, state: Dict):
     path.write_text(json.dumps(state, indent=2, sort_keys=True))
+
 
 class FileLock:
     def __init__(self, path: Path):
         self.path = path
         self.fd = None
+
     def acquire(self):
         import fcntl
         self.fd = open(self.path, "w")
         fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.fd.write(str(os.getpid()))
         self.fd.flush()
+
     def release(self):
         if self.fd:
             import fcntl
@@ -129,25 +152,31 @@ class FileLock:
             finally:
                 self.fd.close()
 
+
 # --- Git ops ---
 def git_fetch_all(repo: Path):
     log("Fetching origin (branches + tags)...")
     run(["git", "fetch", "--all", "--tags", "--prune"], cwd=repo)
 
+
 def git_list_tags(repo: Path) -> List[str]:
     res = run(["git", "tag", "--list"], cwd=repo, capture=True)
     return [t.strip() for t in res.stdout.decode().splitlines() if t.strip()]
 
+
 def tag_on_branch(repo: Path, tag: str, branch: str) -> bool:
     try:
-        run(["git", "merge-base", "--is-ancestor", tag, f"origin/{branch}"], cwd=repo)
+        run(["git", "merge-base", "--is-ancestor", tag, f"origin/{branch}"],
+            cwd=repo)
         return True
     except subprocess.CalledProcessError:
         return False
 
+
 def git_rev_parse(repo: Path, ref: str) -> str:
     res = run(["git", "rev-parse", ref], cwd=repo, capture=True)
     return res.stdout.decode().strip()
+
 
 def git_show(repo: Path, ref_and_path: str) -> Optional[str]:
     try:
@@ -155,6 +184,7 @@ def git_show(repo: Path, ref_and_path: str) -> Optional[str]:
         return res.stdout.decode()
     except subprocess.CalledProcessError:
         return None
+
 
 def clean_target_packages(repo: Path):
     """
@@ -188,12 +218,14 @@ def clean_target_packages(repo: Path):
                 except Exception:
                     pass
 
+
 def checkout_clean(repo: Path, ref: str):
     log(f"Checking out {ref}...")
     run(["git", "checkout", "--force", ref], cwd=repo)
     run(["git", "reset", "--hard"], cwd=repo)
     run(["git", "clean", "-fdx", "-e", "target"], cwd=repo)
     clean_target_packages(repo)
+
 
 # --- Build & collect ---
 def make_package(repo: Path, env: Optional[dict]) -> int:
@@ -204,6 +236,7 @@ def make_package(repo: Path, env: Optional[dict]) -> int:
     except subprocess.CalledProcessError as e:
         return e.returncode
 
+
 def make_arm64(repo: Path, env: Optional[dict]) -> int:
     log("Running: make arm64")
     try:
@@ -211,6 +244,7 @@ def make_arm64(repo: Path, env: Optional[dict]) -> int:
         return 0
     except subprocess.CalledProcessError as e:
         return e.returncode
+
 
 def make_target(repo: Path, target: str, env: Optional[dict]) -> int:
     try:
@@ -221,6 +255,7 @@ def make_target(repo: Path, target: str, env: Optional[dict]) -> int:
         log(f"WARN: make {target} failed with rc={e.returncode} (continuing)")
         return e.returncode
 
+
 def parse_artifact(p: Path) -> Tuple[str, Optional[str]]:
     nl = p.name.lower()
     if nl.endswith(".deb"):
@@ -228,9 +263,10 @@ def parse_artifact(p: Path) -> Tuple[str, Optional[str]]:
         if m:
             distro = m.group("distro")
             arch = m.group("arch")
-            # arm64 packages go to a separate "<distro>-arm64" directory to avoid
-            # mixed-arch Packages files. amd64 (and future additional primary-arch)
-            # packages use the plain "<distro>" directory, preserving existing repo URLs.
+            # arm64 packages go to a separate "<distro>-arm64" directory
+            # to avoid mixed-arch Packages files.
+            # amd64 (and future additional primary-arch) packages use
+            # the plain "<distro>" directory, preserving existing repo URLs.
             if arch == "arm64":
                 return ("deb", f"{distro}-arm64")
             return ("deb", distro)
@@ -238,9 +274,10 @@ def parse_artifact(p: Path) -> Tuple[str, Optional[str]]:
     if nl.endswith(".rpm"):
         m = RPM_RE.match(nl)
         return ("rpm", m.group("distro") if m else "unknown")
-    if nl.endswith(".spdx") or nl.endswith("sbom.json") or nl.endswith(".cdx.json") or nl.endswith(".spdx.json"):
+    if nl.endswith((".spdx", "sbom.json", ".cdx.json", ".spdx.json")):
         return ("sbom", None)
     return ("other", None)
+
 
 def collect_from_packaging(packaging_dir: Path, built_since: float):
     deb: Dict[str, List[Path]] = {}
@@ -265,6 +302,7 @@ def collect_from_packaging(packaging_dir: Path, built_since: float):
             sboms.append(p)
     return deb, rpm, sboms
 
+
 # --- Repo metadata ---
 def apt_flat_repo(deb_dir: Path, channel: str):
     deb_dir = Path(deb_dir).resolve()
@@ -284,21 +322,23 @@ def apt_flat_repo(deb_dir: Path, channel: str):
         SCRIPT_DIR = Path.cwd()
 
     # GPG env controls (unchanged)
-    GPG_KEYID   = os.environ.get("GPG_KEYID", "").strip()
+    GPG_KEYID = os.environ.get("GPG_KEYID", "").strip()
     GPG_HOMEDIR = os.environ.get("GPG_HOMEDIR", "").strip()
-    GPG_EXTRA   = os.environ.get("GPG_EXTRA", "").strip()
+    GPG_EXTRA = os.environ.get("GPG_EXTRA", "").strip()
     APTFTPARCHIVE_ENV = os.environ.get("APTFTPARCHIVE", "").strip()
 
     # Tool resolution
     scan = shutil.which("dpkg-scanpackages")
 
-    # Prefer ./bin/apt-ftparchive (next to the build script), then PATH, then env
-    aptft_candidates: list[str] = []
+    # Prefer ./bin/apt-ftparchive (next to the build script),
+    # then PATH, then env
+    aptft_candidates: List[str] = []
     local_aptft = SCRIPT_DIR / "bin" / "apt-ftparchive"
     if local_aptft.is_file() and os.access(local_aptft, os.X_OK):
         aptft_candidates.append(str(local_aptft))
-    if shutil.which("apt-ftparchive"):
-        aptft_candidates.append(shutil.which("apt-ftparchive"))
+    path = shutil.which("apt-ftparchive")
+    if path:
+        aptft_candidates.append(path)
     if APTFTPARCHIVE_ENV:
         aptft_candidates.append(APTFTPARCHIVE_ENV)
 
@@ -306,16 +346,17 @@ def apt_flat_repo(deb_dir: Path, channel: str):
     aptft = next((c for c in aptft_candidates if c), None)
 
     if not scan and not aptft:
-        log(f"INFO: dpkg-scanpackages/apt-ftparchive not found; skipping APT metadata in {deb_dir}.")
+        log("INFO: dpkg-scanpackages/apt-ftparchive not found; "
+            f"skipping APT metadata in {deb_dir}.")
         return
 
     log(f"Generating APT metadata in {deb_dir} ...")
 
-    packages     = deb_dir / "Packages"
-    packages_gz  = deb_dir / "Packages.gz"
-    release      = deb_dir / "Release"
-    inrelease    = deb_dir / "InRelease"
-    release_gpg  = deb_dir / "Release.gpg"
+    packages = deb_dir / "Packages"
+    packages_gz = deb_dir / "Packages.gz"
+    release = deb_dir / "Release"
+    inrelease = deb_dir / "InRelease"
+    release_gpg = deb_dir / "Release.gpg"
 
     # Clean old indices/signatures
     for p in (packages, packages_gz, inrelease, release_gpg):
@@ -327,14 +368,19 @@ def apt_flat_repo(deb_dir: Path, channel: str):
     # Create Packages
     if scan:
         with open(packages, "wb") as outf:
-            subprocess.run([scan, ".", "/dev/null"], cwd=deb_dir, check=True, stdout=outf)
+            subprocess.run([scan, ".", "/dev/null"], cwd=deb_dir,
+                           check=True, stdout=outf)
     else:
         with open(packages, "wb") as outf:
-            subprocess.run([aptft, "packages", "."], cwd=deb_dir, check=True, stdout=outf)
+            if aptft is None:
+                raise RuntimeError("apt-ftparchive not found")
+            subprocess.run([aptft, "packages", "."], cwd=deb_dir,
+                           check=True, stdout=outf)
 
     # gzip -n -c Packages > Packages.gz
     with open(packages_gz, "wb") as gzout, open(packages, "rb") as pin:
-        subprocess.run(["gzip", "-n", "-c"], cwd=deb_dir, check=True, stdin=pin, stdout=gzout)
+        subprocess.run(["gzip", "-n", "-c"], cwd=deb_dir, check=True,
+                       stdin=pin, stdout=gzout)
 
     # Build Release atomically
     try:
@@ -349,7 +395,8 @@ def apt_flat_repo(deb_dir: Path, channel: str):
         elif "_arm64.deb" in deb.name:
             archs.add("arm64")
     if not archs:
-        log(f"WARN: could not detect architecture from DEB filenames in {deb_dir}; defaulting to amd64")
+        log("WARN: could not detect architecture from DEB filenames in "
+            f"{deb_dir}; defaulting to amd64")
         archs.add("amd64")
     archs_str = " ".join(sorted(archs))
     tmp_fd, tmp_path = tempfile.mkstemp(dir=str(deb_dir))
@@ -366,7 +413,8 @@ def apt_flat_repo(deb_dir: Path, channel: str):
             tmp.write(header)
 
             if aptft:
-                proc = subprocess.run([aptft, "release", "."], cwd=deb_dir, check=True, stdout=subprocess.PIPE)
+                proc = subprocess.run([aptft, "release", "."], cwd=deb_dir,
+                                      check=True, stdout=subprocess.PIPE)
                 tmp.write(proc.stdout)
 
         os.replace(tmp_path, release)
@@ -385,18 +433,25 @@ def apt_flat_repo(deb_dir: Path, channel: str):
             pass
 
     if release.exists():
-        sign_common = ["gpg", "--batch", "--yes", "--pinentry-mode", "loopback"]
+        sign_common = ["gpg", "--batch", "--yes",
+                       "--pinentry-mode", "loopback"]
         if GPG_HOMEDIR:
             sign_common += ["--homedir", GPG_HOMEDIR]
         if GPG_EXTRA:
             sign_common += GPG_EXTRA.split()
 
         if GPG_KEYID:
-            sign_inrelease   = sign_common + ["--local-user", GPG_KEYID, "--clearsign", "-o", "InRelease", "Release"]
-            sign_release_gpg = sign_common + ["--local-user", GPG_KEYID, "-abs", "-o", "Release.gpg", "Release"]
+            sign_inrelease = sign_common + ["--local-user", GPG_KEYID,
+                                            "--clearsign", "-o", "InRelease",
+                                            "Release"]
+            sign_release_gpg = sign_common + ["--local-user", GPG_KEYID,
+                                              "-abs", "-o", "Release.gpg",
+                                              "Release"]
         else:
-            sign_inrelease   = sign_common + ["--clearsign", "-o", "InRelease", "Release"]
-            sign_release_gpg = sign_common + ["-abs", "-o", "Release.gpg", "Release"]
+            sign_inrelease = sign_common + ["--clearsign", "-o", "InRelease",
+                                            "Release"]
+            sign_release_gpg = sign_common + ["-abs", "-o", "Release.gpg",
+                                              "Release"]
 
         log(f"Signing APT Release in {deb_dir} ...")
         subprocess.run(sign_inrelease, cwd=deb_dir, check=True)
@@ -405,23 +460,29 @@ def apt_flat_repo(deb_dir: Path, channel: str):
         log(f"{release} is missing!")
 
     log("Done: " + " ".join(
-        str(p) for p in [packages, packages_gz, release, inrelease, release_gpg] if Path(p).exists()
+        str(p) for p in [packages, packages_gz, release,
+                         inrelease, release_gpg] if Path(p).exists()
     ))
+
 
 def sign_rpm_repo(rpm_dir: Path):
     gpg = which("gpg")
-    if not gpg:
-        log("INFO: gpg not found; skipping signing RPM repo {rpm_dir}.")
+    if gpg is None:
+        log(f"INFO: gpg not found; skipping signing RPM repo {rpm_dir}.")
+        return
     repodata = rpm_dir / "repodata"
     log(f"Signing RPM repo in {repodata} ...")
-    subprocess.run([gpg, "--detach-sign", "--armor", "repomd.xml"], cwd=repodata, check=True)
+    subprocess.run([gpg, "--detach-sign", "--armor", "repomd.xml"],
+                   cwd=repodata, check=True)
+
 
 def create_repo_file(rpm_dir: Path):
     """
     Create 'himmelblau.repo' inside rpm_dir, deriving:
       - channel: 'stable' or 'nightly'
       - version: e.g. 'latest' or a timestamped/versioned dir
-      - distro:  last path component (e.g., 'fedora42', 'fedora43', 'rawhide', 'tumbleweed')
+      - distro:  last path component (e.g., 'fedora42', 'fedora43', 'rawhide',
+                                        'tumbleweed')
 
     Expected layout (examples):
       /.../stable/<version>/rpm/<distro>
@@ -440,26 +501,35 @@ def create_repo_file(rpm_dir: Path):
         ch_idx = parts.index("nightly")
         channel = "nightly"
     else:
-        raise ValueError(f"Path does not contain 'stable' or 'nightly': {rpm_dir}")
+        raise ValueError("Path does not contain 'stable' or 'nightly': "
+                         f"{rpm_dir}")
 
     # Version is the segment immediately after the channel
     if len(parts) <= ch_idx + 1:
-        raise ValueError(f"Path missing version component after '{channel}': {rpm_dir}")
+        raise ValueError(f"Path missing version component after '{channel}': "
+                         f"{rpm_dir}")
     version = parts[ch_idx + 1]  # e.g. 'latest' or '2025-11-10-13c22d1890ad'
 
     # Basic sanity check for '/rpm/<distro>'
-    # We accept any distro name; just ensure 'rpm' is present before the last segment
+    # We accept any distro name; just ensure 'rpm' is present
+    #                               before the last segment
     try:
         rpm_idx = parts.index("rpm", ch_idx + 2)
     except ValueError:
-        raise ValueError(f"Path does not contain '/rpm/' after version: {rpm_dir}")
+        raise ValueError("Path does not contain '/rpm/' after version: "
+                         f"{rpm_dir}")
     if rpm_idx != len(parts) - 2:
         # Expect .../<channel>/<version>/rpm/<distro>
         # (rpm should be the penultimate element)
-        pass  # don't hard-fail; just proceed (allows extra nesting if you really have it)
+        # don't hard-fail; just proceed
+        # (allows extra nesting if you really have it)
+        pass
 
     distro = rpm_dir.name  # last component
-    base_url = f"https://packages.himmelblau-idm.org/{channel}/{version}/rpm/{distro}/"
+    base_url = (
+        f"https://packages.himmelblau-idm.org/{channel}/"
+        f"{version}/rpm/{distro}/"
+    )
     gpgkey_url = "https://packages.himmelblau-idm.org/himmelblau.asc"
 
     repo_content = (
@@ -476,18 +546,21 @@ def create_repo_file(rpm_dir: Path):
     repo_path.write_text(repo_content, encoding="utf-8")
     return repo_path
 
+
 def rpm_repo(rpm_dir: Path):
     rpms = list(rpm_dir.glob("*.rpm"))
     if not rpms:
         return
     cr = which("createrepo_c") or which("createrepo")
     if not cr:
-        log(f"INFO: createrepo_c/createrepo not found; skipping RPM metadata in {rpm_dir}.")
+        log("INFO: createrepo_c/createrepo not found; "
+            f"skipping RPM metadata in {rpm_dir}.")
         return
     log(f"Generating RPM repodata in {rpm_dir} ...")
     subprocess.run([cr, "."], cwd=rpm_dir, check=True)
     sign_rpm_repo(rpm_dir)
     create_repo_file(rpm_dir)
+
 
 # --- Publish ---
 def publish_per_distro(publish_root: Path, channel: str, label: str,
@@ -530,14 +603,19 @@ def publish_per_distro(publish_root: Path, channel: str, label: str,
             pass
         os.symlink(label, latest)
 
+
 # --- Missing-distro retry helpers ---
-DISTRO_LINE_RE = re.compile(r'^\s*-\s*make\s+([a-z0-9.]+)\s*$', re.IGNORECASE | re.MULTILINE)
+DISTRO_LINE_RE = re.compile(r'^\s*-\s*make\s+([a-z0-9.]+)\s*$',
+                            re.IGNORECASE | re.MULTILINE)
 ARM64_SUPPORTED_RE = re.compile(r'\barm64-([a-z0-9.]+)\b')
 
-def parse_per_distro_targets_via_make_help(repo: Path) -> Tuple[List[str], List[str]]:
+
+def parse_per_distro_targets_via_make_help(
+        repo: Path
+) -> Tuple[List[str], List[str]]:
     """
-    Checkout origin/main, run `make help`, parse both the 'Per-distro' target lines
-    and the ARM64 'Supported:' targets, then restore the previous HEAD.
+    Checkout origin/main, run `make help`, parse both the 'Per-distro' target
+    lines and the ARM64 'Supported:' targets, then restore the previous HEAD.
     Returns (per_distro_targets, arm64_targets). Returns ([], []) on failure.
     """
     # Remember where we started
@@ -564,7 +642,8 @@ def parse_per_distro_targets_via_make_help(repo: Path) -> Tuple[List[str], List[
                 seen.add(t)
 
         if targets:
-            log(f"Parsed {len(targets)} per-distro targets from `make help` on origin/main.")
+            log(f"Parsed {len(targets)} per-distro targets from "
+                "`make help` on origin/main.")
         else:
             log("WARN: no per-distro targets found in `make help` output.")
 
@@ -579,11 +658,13 @@ def parse_per_distro_targets_via_make_help(repo: Path) -> Tuple[List[str], List[
                         arm64_seen.add(tgt)
 
         if arm64_targets:
-            log(f"Parsed {len(arm64_targets)} arm64 targets from `make help` on origin/main.")
+            log(f"Parsed {len(arm64_targets)} arm64 targets "
+                "from `make help` on origin/main.")
         else:
             log("WARN: no arm64 targets found in `make help` output.")
     except subprocess.CalledProcessError as e:
-        log(f"WARN: `make help` failed (rc={e.returncode}); cannot determine per-distro targets.")
+        log(f"WARN: `make help` failed (rc={e.returncode}); "
+            "cannot determine per-distro targets.")
     except Exception as e:
         log(f"WARN: error running `make help`: {e}")
     finally:
@@ -592,18 +673,23 @@ def parse_per_distro_targets_via_make_help(repo: Path) -> Tuple[List[str], List[
             try:
                 checkout_clean(repo, current_head)
             except Exception as e:
-                log(f"WARN: failed to restore previous HEAD after make help: {e}")
+                log("WARN: failed to restore previous HEAD after make help: "
+                    f"{e}")
 
     # Skip building on gentoo
-    return ([t for t in targets if t != "gentoo"], [t for t in arm64_targets if t != "gentoo"])
+    return ([t for t in targets if t != "gentoo"],
+            [t for t in arm64_targets if t != "gentoo"])
+
 
 def target_is_deb(t: str) -> bool:
     distro = t[len("arm64-"):] if t.startswith("arm64-") else t
     return distro.startswith("ubuntu") or distro.startswith("debian")
 
+
 def published_has_pkgs(base: Path, t: str) -> bool:
     """
-    Returns True if the publish dir already contains at least one artifact for target t.
+    Returns True if the publish dir already contains at least
+    one artifact for target t.
     Targets prefixed with 'arm64-' are checked for arm64-specific artifacts;
     all other targets are checked for amd64-specific artifacts.
     """
@@ -622,7 +708,10 @@ def published_has_pkgs(base: Path, t: str) -> bool:
         pattern = "*.aarch64.rpm" if is_arm64 else "*.x86_64.rpm"
         return d.is_dir() and any(d.glob(pattern))
 
-def compute_missing_targets_in_label(publish_root: Path, channel: str, label: str, expected_targets: List[str]) -> List[str]:
+
+def compute_missing_targets_in_label(
+        publish_root: Path, channel: str,
+        label: str, expected_targets: List[str]) -> List[str]:
     base = publish_root / channel / label
     if not base.exists():
         return []
@@ -631,15 +720,19 @@ def compute_missing_targets_in_label(publish_root: Path, channel: str, label: st
         if not published_has_pkgs(base, t):
             missing.append(t)
     if missing:
-        log(f"{channel}/{label}: missing {len(missing)} targets -> {', '.join(missing)}")
+        log(f"{channel}/{label}: missing {len(missing)} targets -> "
+            f"{', '.join(missing)}")
     else:
         log(f"{channel}/{label}: no missing targets.")
     return missing
 
+
 def publish_incremental(publish_root: Path, channel: str, label: str,
-                        deb_map: Dict[str, List[Path]], rpm_map: Dict[str, List[Path]], sboms: List[Path]):
+                        deb_map: Dict[str, List[Path]],
+                        rpm_map: Dict[str, List[Path]], sboms: List[Path]):
     """
-    Append artifacts to an existing label directory and regenerate metadata only for touched distros.
+    Append artifacts to an existing label directory
+    and regenerate metadata only for touched distros.
     """
     base = publish_root / channel / label
     ensure_dir(base)
@@ -664,6 +757,7 @@ def publish_incremental(publish_root: Path, channel: str, label: str,
         for f in sboms:
             shutil.copy2(f, sbdir / f.name)
 
+
 def patch_signing_keys(filename):
     old_hexes = [
         "0xFFE471BA97CD96ED7330E0B4F5A25D2D6AA97EC9",
@@ -683,6 +777,7 @@ def patch_signing_keys(filename):
     with open(filename, "w", encoding="utf-8") as f:
         f.write(content)
 
+
 def make_sign_rpms(repo: Path, env: Optional[dict]) -> int:
     log("Running: make sign-rpms")
     try:
@@ -691,9 +786,13 @@ def make_sign_rpms(repo: Path, env: Optional[dict]) -> int:
     except subprocess.CalledProcessError as e:
         return e.returncode
 
-def retry_missing_for_stable(repo: Path, publish_root: Path, expected_targets: List[str]):
-    # Discover the latest stable tag that already has a publish dir (or symlink).
-    tags = sorted([t for t in git_list_tags(repo) if STABLE_TAG_RE.match(t)], key=version.parse, reverse=True)
+
+def retry_missing_for_stable(
+        repo: Path, publish_root: Path, expected_targets: List[str]):
+    # Discover the latest stable tag that already
+    # has a publish dir (or symlink).
+    tags = sorted([t for t in git_list_tags(repo) if STABLE_TAG_RE.match(t)],
+                  key=version.parse, reverse=True)
     for t in [t for t in tags if "beta" not in t and "alpha" not in t]:
         label_dir = publish_root / "stable" / t
         if label_dir.exists():
@@ -710,16 +809,19 @@ def retry_missing_for_stable(repo: Path, publish_root: Path, expected_targets: L
             break
 
     if not stable_branch:
-        log(f"WARN: tag {latest_tag} not found on any supported branch; skipping retry")
+        log(f"WARN: tag {latest_tag} not found on any supported branch; "
+            "skipping retry")
         return
 
-    missing = compute_missing_targets_in_label(publish_root, "stable", latest_tag, expected_targets)
+    missing = compute_missing_targets_in_label(publish_root, "stable",
+                                               latest_tag, expected_targets)
     if not missing:
         return
     # Build missing targets using the branch tip (not the tag itself).
     # This allows build fixes pushed to the branch to be picked up without
     # requiring a new release tag.
-    log(f"Building from branch tip origin/{stable_branch} (publishing as {latest_tag})")
+    log(f"Building from branch tip origin/{stable_branch} "
+        f"(publishing as {latest_tag})")
     checkout_clean(repo, f"origin/{stable_branch}")
     patch_signing_keys(repo / "Makefile")
     env = os.environ.copy()
@@ -727,8 +829,11 @@ def retry_missing_for_stable(repo: Path, publish_root: Path, expected_targets: L
     for tgt in missing:
         make_target(repo, tgt, env)
     make_sign_rpms(repo, env)
-    deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR, built_since=started)
-    publish_incremental(publish_root, "stable", latest_tag, deb_map, rpm_map, sboms)
+    deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR,
+                                                     built_since=started)
+    publish_incremental(publish_root, "stable", latest_tag, deb_map,
+                        rpm_map, sboms)
+
 
 def resolve_nightly_latest_label(publish_root: Path) -> Optional[str]:
     latest = publish_root / "nightly" / "latest"
@@ -737,13 +842,15 @@ def resolve_nightly_latest_label(publish_root: Path) -> Optional[str]:
             return os.readlink(latest)
         except OSError:
             return None
-    # Fallback: pick most recent directory (lexicographically should be fine with YYYY-MM-DD-commit form)
+    # Fallback: pick most recent directory
+    # (lexicographically should be fine with YYYY-MM-DD-commit form)
     nightly_root = publish_root / "nightly"
     if nightly_root.exists():
         labels = [p.name for p in nightly_root.iterdir() if p.is_dir()]
         if labels:
             return sorted(labels, reverse=True)[0]
     return None
+
 
 def nightly_label_commit_prefix(label: str) -> Optional[str]:
     if not label:
@@ -755,16 +862,20 @@ def nightly_label_commit_prefix(label: str) -> Optional[str]:
         return None
     return commit_prefix
 
-def retry_missing_for_nightly(repo: Path, publish_root: Path, expected_targets: List[str]):
+
+def retry_missing_for_nightly(
+        repo: Path, publish_root: Path, expected_targets: List[str]):
     label = resolve_nightly_latest_label(publish_root)
     if not label:
         return
     tip = git_rev_parse(repo, "origin/main")
     label_prefix = nightly_label_commit_prefix(label)
     if label_prefix and tip and not tip.startswith(label_prefix):
-        log(f"Nightly retry skipped: latest label {label} is behind origin/main ({tip[:12]}).")
+        log(f"Nightly retry skipped: latest label {label} is behind "
+            f"origin/main ({tip[:12]}).")
         return
-    missing = compute_missing_targets_in_label(publish_root, "nightly", label, expected_targets)
+    missing = compute_missing_targets_in_label(publish_root, "nightly", label,
+                                               expected_targets)
     if not missing:
         return
     # Build missing targets from origin/main
@@ -773,16 +884,21 @@ def retry_missing_for_nightly(repo: Path, publish_root: Path, expected_targets: 
     started = time.time()
     for tgt in missing:
         make_target(repo, tgt, env)
-    deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR, built_since=started)
-    publish_incremental(publish_root, "nightly", label, deb_map, rpm_map, sboms)
+    deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR,
+                                                     built_since=started)
+    publish_incremental(publish_root, "nightly", label, deb_map,
+                        rpm_map, sboms)
+
 
 # --- Planning + bootstrap helpers ---
 def find_latest_stable_tag(repo: Path, branch: str) -> Optional[str]:
-    candidates = [t for t in git_list_tags(repo) if STABLE_TAG_RE.match(t) and tag_on_branch(repo, t, branch)]
+    candidates = [t for t in git_list_tags(repo)
+                  if STABLE_TAG_RE.match(t) and tag_on_branch(repo, t, branch)]
     if not candidates:
         return None
     candidates.sort(key=version.parse, reverse=True)
     return candidates[0]
+
 
 def plan_stable(repo: Path, branch: str, state: Dict) -> List[str]:
     built = set(state.get("built_tags", {}).get(branch, []))
@@ -800,7 +916,10 @@ def plan_stable(repo: Path, branch: str, state: Dict) -> List[str]:
         log(f"Stable planner: {branch} -> no new tags.")
     return to_build
 
-def plan_nightly(repo: Path, state: Dict, force_daily: bool) -> Tuple[bool, str, str]:
+
+def plan_nightly(
+        repo: Path, state: Dict, force_daily: bool
+) -> Tuple[bool, str, str]:
     tip = git_rev_parse(repo, "origin/main")
     last_commit = state.get("nightly", {}).get("last_commit")
     today = utc_today()
@@ -814,6 +933,7 @@ def plan_nightly(repo: Path, state: Dict, force_daily: bool) -> Tuple[bool, str,
     log("Nightly planner: up-to-date; skip.")
     return False, tip, today
 
+
 def needs_bootstrap_stable(publish_root: Path, tag: Optional[str]) -> bool:
     if not tag:
         return False
@@ -821,14 +941,18 @@ def needs_bootstrap_stable(publish_root: Path, tag: Optional[str]) -> bool:
     latest = publish_root / "stable" / "latest"
     return not tag_dir.exists() or not latest.exists()
 
+
 def needs_bootstrap_nightly(publish_root: Path, label: str) -> bool:
     label_dir = publish_root / "nightly" / label
     latest = publish_root / "nightly" / "latest"
     return not label_dir.exists() or not latest.exists()
 
+
 # --- Main ---
 def main():
-    ap = argparse.ArgumentParser(description="Himmelblau autobuilder/publisher (per-distro) with bootstrap + missing-distro retries")
+    ap = argparse.ArgumentParser(
+        description="Himmelblau autobuilder/publisher (per-distro) "
+                    "with bootstrap + missing-distro retries")
     ap.add_argument("--repo-dir", type=Path, default=DEFAULT_REPO_DIR)
     ap.add_argument("--publish-dir", type=Path, default=DEFAULT_PUBLISH_DIR)
     ap.add_argument("--force-daily", action="store_true")
@@ -861,7 +985,9 @@ def main():
         git_fetch_all(repo)
 
         # Always parse expected per-distro targets from origin/main
-        expected_targets, arm64_targets = parse_per_distro_targets_via_make_help(repo)
+        expected_targets, arm64_targets = (
+            parse_per_distro_targets_via_make_help(repo)
+        )
 
         # ===== Retry missing BEFORE planning new builds =====
         if expected_targets:
@@ -870,7 +996,8 @@ def main():
                 if args.log_file:
                     switch_log(Path(str(args.log_file) + f".{branch}"))
                 try:
-                    retry_missing_for_stable(repo, publish_root, expected_targets)
+                    retry_missing_for_stable(repo, publish_root,
+                                             expected_targets)
                 except Exception as e:
                     log(f"WARN: stable retry encountered an error: {e}")
 
@@ -883,9 +1010,11 @@ def main():
                 log(f"WARN: nightly retry encountered an error: {e}")
 
         if arm64_targets:
-            # ARM64 stable retry (single run; function determines applicable stable branch)
+            # ARM64 stable retry
+            # (single run; function determines applicable stable branch)
             if args.log_file:
-                switch_log(Path(str(args.log_file) + f".{SUPPORTED_BRANCHES[0]}"))
+                switch_log(Path(str(args.log_file) +
+                                f".{SUPPORTED_BRANCHES[0]}"))
             try:
                 retry_missing_for_stable(repo, publish_root, arm64_targets)
             except Exception as e:
@@ -907,30 +1036,41 @@ def main():
             latest_stable = find_latest_stable_tag(repo, branch)
             if needs_bootstrap_stable(publish_root, latest_stable):
                 if latest_stable:
-                    log(f"Bootstrap: publishing latest stable tag {latest_stable} ...")
+                    log(f"Bootstrap: publishing latest stable tag "
+                        f"{latest_stable} ...")
                     checkout_clean(repo, latest_stable)
                     patch_signing_keys(repo / "Makefile")
                     env = os.environ.copy()
                     started = time.time()
                     rc = make_package(repo, env)
                     if rc != 0:
-                        log(f"ERROR: Some builds failed for {latest_stable} (rc={rc})")
+                        log(f"ERROR: Some builds failed for {latest_stable} "
+                            f"(rc={rc})")
                     rc_arm64 = make_arm64(repo, env)
                     if rc_arm64 != 0:
-                        log(f"ERROR: Some arm64 builds failed for {latest_stable} (rc={rc_arm64})")
-                    deb_map, rpm_map, sboms = collect_from_packaging(packaging_dir, built_since=started)
+                        log(f"ERROR: Some arm64 builds failed for "
+                            f"{latest_stable} (rc={rc_arm64})")
+                    deb_map, rpm_map, sboms = collect_from_packaging(
+                        packaging_dir, built_since=started)
                     has_artifacts = bool(deb_map or rpm_map or sboms)
                     if not has_artifacts:
-                        log(f"WARN: no stable artifacts found for {latest_stable}; skipping publish/state update.")
+                        log(f"WARN: no stable artifacts found for "
+                            f"{latest_stable}; skipping publish/state update.")
                     else:
-                        publish_per_distro(publish_root, "stable", latest_stable, deb_map, rpm_map, sboms)
+                        publish_per_distro(publish_root, "stable",
+                                           latest_stable, deb_map,
+                                           rpm_map, sboms)
                         if rc == 0:
-                            state.setdefault("built_tags", {}).setdefault(branch, [])
-                            if latest_stable not in state["built_tags"][branch]:
-                                state["built_tags"][branch].append(latest_stable)
+                            state.setdefault("built_tags", {}).setdefault(
+                                                                branch, [])
+                            built = state["built_tags"][branch]
+                            if latest_stable not in built:
+                                state["built_tags"][branch].append(
+                                                        latest_stable)
                             save_state(state_path, state)
                         else:
-                            log(f"WARN: stable build failed for {latest_stable}; not marking tag as built.")
+                            log("WARN: stable build failed for "
+                                f"{latest_stable}; not marking tag as built.")
 
         # ===== Normal nightly planner =====
         # Switch back to base log for nightly builds
@@ -947,28 +1087,35 @@ def main():
             rc_arm64 = make_arm64(repo, env)
             if rc_arm64 != 0:
                 log(f"ERROR: Some nightly arm64 builds failed (rc={rc_arm64})")
-            deb_map, rpm_map, sboms = collect_from_packaging(packaging_dir, built_since=started)
+            deb_map, rpm_map, sboms = (
+                collect_from_packaging(packaging_dir, built_since=started)
+            )
             label = f"{today}-{(tip2 or 'unknown')[:12]}"
             has_artifacts = bool(deb_map or rpm_map or sboms)
             if not has_artifacts:
-                log("WARN: no nightly artifacts found; skipping publish/state update.")
+                log("WARN: no nightly artifacts found; "
+                    "skipping publish/state update.")
             else:
-                publish_per_distro(publish_root, "nightly", label, deb_map, rpm_map, sboms)
+                publish_per_distro(publish_root, "nightly", label,
+                                   deb_map, rpm_map, sboms)
                 if rc == 0:
                     state.setdefault("nightly", {})["last_commit"] = tip2
                     state["nightly"]["last_date"] = today
                     save_state(state_path, state)
                 else:
-                    log("WARN: nightly build failed; not marking commit as built.")
+                    log("WARN: nightly build failed; "
+                        "not marking commit as built.")
 
         log("Done.")
         return 0
     finally:
         lock.release()
         subprocess.run(
-            ["find", publish_root, "-type", "f", "-name", "Release", "-exec", "chmod", "0644", "{}", "+"],
+            ["find", publish_root, "-type", "f", "-name",
+             "Release", "-exec", "chmod", "0644", "{}", "+"],
             check=True
         )
+
 
 if __name__ == "__main__":
     sys.exit(main())
