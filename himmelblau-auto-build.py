@@ -42,7 +42,7 @@ PACKAGING_DIR = "packaging"
 
 STABLE_TAG_RE = re.compile(r'^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')
 
-DEB_RE = re.compile(r"""(?xi)^.*(?P<ver>\d+\.\d+\.\d+)-(?P<distro>[a-z0-9.]+)_(?:amd64|arm64)\.deb$""")
+DEB_RE = re.compile(r"""(?xi)^.*(?P<ver>\d+\.\d+\.\d+)-(?P<distro>[a-z0-9.]+)_(?P<arch>amd64|arm64)\.deb$""")
 RPM_RE = re.compile(r"""(?xi).*- (?P<distro>fedora\d+|rawhide|rocky\d+|leap\d(?:\.\d)?|tumbleweed|sle\d+sp\d+|sle\d{2}|amzn\d+) \.rpm$""")
 
 GPG_KEYID = os.environ.get("HBL_GPG_KEYID")
@@ -225,7 +225,16 @@ def parse_artifact(p: Path) -> Tuple[str, Optional[str]]:
     nl = p.name.lower()
     if nl.endswith(".deb"):
         m = DEB_RE.match(nl)
-        return ("deb", m.group("distro") if m else "unknown")
+        if m:
+            distro = m.group("distro")
+            arch = m.group("arch")
+            # arm64 packages go to a separate "<distro>-arm64" directory to avoid
+            # mixed-arch Packages files. amd64 (and future additional primary-arch)
+            # packages use the plain "<distro>" directory, preserving existing repo URLs.
+            if arch == "arm64":
+                return ("deb", f"{distro}-arm64")
+            return ("deb", distro)
+        return ("deb", "unknown")
     if nl.endswith(".rpm"):
         m = RPM_RE.match(nl)
         return ("rpm", m.group("distro") if m else "unknown")
@@ -333,7 +342,6 @@ def apt_flat_repo(deb_dir: Path, channel: str):
     except Exception:
         pass
 
-    date_str = dt.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
     archs = set()
     for deb in debs:
         if "_amd64.deb" in deb.name:
@@ -354,7 +362,6 @@ def apt_flat_repo(deb_dir: Path, channel: str):
                 f"Codename: {deb_dir.name}\n"
                 f"Architectures: {archs_str}\n"
                 "Components: main\n"
-                f"Date: {date_str}\n"
             ).encode("utf-8")
             tmp.write(header)
 
@@ -603,8 +610,12 @@ def published_has_pkgs(base: Path, t: str) -> bool:
     is_arm64 = t.startswith("arm64-")
     distro = t[len("arm64-"):] if is_arm64 else t
     if target_is_deb(t):
-        d = base / "deb" / distro
-        pattern = "*_arm64.deb" if is_arm64 else "*_amd64.deb"
+        if is_arm64:
+            d = base / "deb" / f"{distro}-arm64"
+            pattern = "*_arm64.deb"
+        else:
+            d = base / "deb" / distro
+            pattern = "*_amd64.deb"
         return d.is_dir() and any(d.glob(pattern))
     else:
         d = base / "rpm" / distro
