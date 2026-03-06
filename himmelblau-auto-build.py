@@ -346,7 +346,7 @@ def apt_flat_repo(deb_dir: Path, channel: str):
     aptft = next((c for c in aptft_candidates if c), None)
 
     if not scan and not aptft:
-        log("INFO: dpkg-scanpackages/apt-ftparchive not found;"
+        log("INFO: dpkg-scanpackages/apt-ftparchive not found; "
             f"skipping APT metadata in {deb_dir}.")
         return
 
@@ -395,7 +395,7 @@ def apt_flat_repo(deb_dir: Path, channel: str):
         elif "_arm64.deb" in deb.name:
             archs.add("arm64")
     if not archs:
-        log("WARN: could not detect architecture from DEB filenames in"
+        log("WARN: could not detect architecture from DEB filenames in "
             f"{deb_dir}; defaulting to amd64")
         archs.add("amd64")
     archs_str = " ".join(sorted(archs))
@@ -468,7 +468,7 @@ def apt_flat_repo(deb_dir: Path, channel: str):
 def sign_rpm_repo(rpm_dir: Path):
     gpg = which("gpg")
     if gpg is None:
-        log("INFO: gpg not found; skipping signing RPM repo {rpm_dir}.")
+        log(f"INFO: gpg not found; skipping signing RPM repo {rpm_dir}.")
         return
     repodata = rpm_dir / "repodata"
     log(f"Signing RPM repo in {repodata} ...")
@@ -553,7 +553,7 @@ def rpm_repo(rpm_dir: Path):
         return
     cr = which("createrepo_c") or which("createrepo")
     if not cr:
-        log("INFO: createrepo_c/createrepo not found;"
+        log("INFO: createrepo_c/createrepo not found; "
             f"skipping RPM metadata in {rpm_dir}.")
         return
     log(f"Generating RPM repodata in {rpm_dir} ...")
@@ -658,12 +658,12 @@ def parse_per_distro_targets_via_make_help(
                         arm64_seen.add(tgt)
 
         if arm64_targets:
-            log(f"Parsed {len(arm64_targets)} arm64 targets"
+            log(f"Parsed {len(arm64_targets)} arm64 targets "
                 "from `make help` on origin/main.")
         else:
             log("WARN: no arm64 targets found in `make help` output.")
     except subprocess.CalledProcessError as e:
-        log(f"WARN: `make help` failed (rc={e.returncode});"
+        log(f"WARN: `make help` failed (rc={e.returncode}); "
             "cannot determine per-distro targets.")
     except Exception as e:
         log(f"WARN: error running `make help`: {e}")
