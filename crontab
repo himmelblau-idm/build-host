@@ -1,1 +1,3 @@
 0 */6 * * * sg nginx -c "PATH=\$PATH:/home/dmulder/.cargo/bin TMPDIR=/mnt/tmp BUILDAH_TMPDIR=/mnt/tmp /usr/bin/python3 /home/dmulder/code/build-host/himmelblau-auto-build.py --publish-dir=/mnt-build/repos/himmelblau --log-file=/home/dmulder/himmelblau-build.log"
+*/20 * * * * cd /home/dmulder/code/build-host && /usr/bin/git pull origin main >> /home/dmulder/build-host-git-pull.log 2>&1
+0 3 1 1,4,7,10 * /usr/bin/podman image prune -f
