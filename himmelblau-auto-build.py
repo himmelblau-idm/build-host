@@ -41,6 +41,7 @@ LOCK_FILE = ".build_lock"
 PACKAGING_DIR = "packaging"
 
 STABLE_TAG_RE = re.compile(r'^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')
+NIGHTLY_LABEL_RE = re.compile(r'^(?P<date>\d{4}-\d{2}-\d{2})-[0-9a-f]+$')
 
 DEB_RE = re.compile(r"""(?xi)^.*(?P<ver>\d+\.\d+\.\d+)-(?P<distro>[a-z0-9.]+)_(?P<arch>amd64|arm64)\.deb$""")
 RPM_RE = re.compile(r"""(?xi).*- (?P<distro>fedora\d+|rawhide|rocky\d+|leap\d(?:\.\d)?|tumbleweed|sle\d+sp\d+|sle\d{2}|amzn\d+) \.rpm$""")
@@ -770,6 +771,11 @@ def retry_missing_for_nightly(repo: Path, publish_root: Path, expected_targets: 
     # Build missing targets from origin/main
     checkout_clean(repo, "origin/main")
     env = os.environ.copy()
+    # Derive the date suffix from the existing label (YYYY-MM-DD-<commit>)
+    # so retries produce the same version as the original nightly build.
+    m = NIGHTLY_LABEL_RE.match(label)
+    label_date = m.group("date").replace("-", "") if m else dt.datetime.utcnow().strftime("%Y%m%d")
+    env["DEB_REVISION_APPEND"] = f"~{label_date}"
     started = time.time()
     for tgt in missing:
         make_target(repo, tgt, env)
@@ -940,6 +946,7 @@ def main():
         if should:
             checkout_clean(repo, "origin/main")
             env = os.environ.copy()
+            env["DEB_REVISION_APPEND"] = f"~{today.replace('-', '')}"
             started = time.time()
             rc = make_package(repo, env)
             if rc != 0:
