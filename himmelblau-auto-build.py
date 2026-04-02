@@ -620,8 +620,17 @@ def published_has_pkgs(base: Path, t: str) -> bool:
         return d.is_dir() and any(d.glob(pattern))
     else:
         d = base / "rpm" / distro
-        pattern = "*.aarch64.rpm" if is_arm64 else "*.x86_64.rpm"
-        return d.is_dir() and any(d.glob(pattern))
+        if not d.is_dir():
+            return False
+
+        # Support both known RPM naming styles:
+        #   <name>.<arch>.rpm
+        #   <name>.<arch>-<distro>.rpm
+        patterns = ("*.aarch64.rpm", "*aarch64-*.rpm") if is_arm64 else ("*.x86_64.rpm", "*x86_64-*.rpm")
+        for pattern in patterns:
+            if any(d.glob(pattern)):
+                return True
+        return False
 
 def compute_missing_targets_in_label(publish_root: Path, channel: str, label: str, expected_targets: List[str]) -> List[str]:
     base = publish_root / channel / label
