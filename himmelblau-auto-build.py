@@ -43,7 +43,7 @@ PACKAGING_DIR = "packaging"
 STABLE_TAG_RE = re.compile(r'^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')
 NIGHTLY_LABEL_RE = re.compile(r'^(?P<date>\d{4}-\d{2}-\d{2})-[0-9a-f]+$')
 
-DEB_RE = re.compile(r"""(?xi)^.*(?P<ver>\d+\.\d+\.\d+)-(?P<distro>[a-z0-9.]+)_(?P<arch>amd64|arm64)\.deb$""")
+DEB_RE = re.compile(r"""(?xi)^.*(?P<ver>\d+\.\d+\.\d+)-(?P<distro>[a-z0-9.]+)(?:~[0-9a-z]+)?_(?P<arch>amd64|arm64)\.deb$""")
 RPM_RE = re.compile(r"""(?xi).*- (?P<distro>fedora\d+|rawhide|rocky\d+|leap\d(?:\.\d)?|tumbleweed|sle\d+sp\d+|sle\d{2}|amzn\d+) \.rpm$""")
 
 GPG_KEYID = os.environ.get("HBL_GPG_KEYID")
