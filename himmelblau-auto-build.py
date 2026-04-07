@@ -46,13 +46,16 @@ PACKAGING_DIR = "packaging"
 STABLE_TAG_RE = re.compile(
     r'^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
 )
+NIGHTLY_LABEL_RE = re.compile(
+    r'^(?P<date>\d{4}-\d{2}-\d{2})-[0-9a-f]+$'
+)
 
-DEB_RE = re.compile(r"(?xi)^.*(?P<ver>\d+\.\d+\.\d+)-"
-                    r"(?P<distro>[a-z0-9.]+)_"
-                    r"(?P<arch>amd64|arm64)\.deb$")
-RPM_RE = re.compile(r"(?xi).*-"
-                    r"(?P<distro>fedora\d+|rawhide|rocky\d+|leap\d(?:\.\d)?"
-                    r"|tumbleweed|sle\d+sp\d+|sle\d{2}|amzn\d+)\.rpm$")
+DEB_RE = re.compile(
+    r"""(?xi)^.*(?P<ver>\d+\.\d+\.\d+)-(?P<distro>[a-z0-9.]+)(?:~[0-9a-z]+)?_(?P<arch>amd64|arm64)\.deb$"""
+)
+RPM_RE = re.compile(
+    r"""(?xi).*- (?P<distro>fedora\d+|rawhide|rocky\d+|leap\d(?:\.\d)?|tumbleweed|sle\d+sp\d+|sle\d{2}|amzn\d+) \.rpm$"""
+)
 
 GPG_KEYID = os.environ.get("HBL_GPG_KEYID")
 GPG_HOMEDIR = os.environ.get("HBL_GPG_HOMEDIR")
@@ -705,8 +708,17 @@ def published_has_pkgs(base: Path, t: str) -> bool:
         return d.is_dir() and any(d.glob(pattern))
     else:
         d = base / "rpm" / distro
-        pattern = "*.aarch64.rpm" if is_arm64 else "*.x86_64.rpm"
-        return d.is_dir() and any(d.glob(pattern))
+        if not d.is_dir():
+            return False
+
+        # Support both known RPM naming styles:
+        #   <name>.<arch>.rpm
+        #   <name>.<arch>-<distro>.rpm
+        patterns = ("*.aarch64.rpm", "*aarch64-*.rpm") if is_arm64 else ("*.x86_64.rpm", "*x86_64-*.rpm")
+        for pattern in patterns:
+            if any(d.glob(pattern)):
+                return True
+        return False
 
 
 def compute_missing_targets_in_label(
@@ -881,6 +893,11 @@ def retry_missing_for_nightly(
     # Build missing targets from origin/main
     checkout_clean(repo, "origin/main")
     env = os.environ.copy()
+    # Derive the date suffix from the existing label (YYYY-MM-DD-<commit>)
+    # so retries produce the same version as the original nightly build.
+    m = NIGHTLY_LABEL_RE.match(label)
+    label_date = m.group("date").replace("-", "") if m else dt.datetime.utcnow().strftime("%Y%m%d")
+    env["DEB_REVISION_APPEND"] = f"~{label_date}"
     started = time.time()
     for tgt in missing:
         make_target(repo, tgt, env)
@@ -1080,6 +1097,7 @@ def main():
         if should:
             checkout_clean(repo, "origin/main")
             env = os.environ.copy()
+            env["DEB_REVISION_APPEND"] = f"~{today.replace('-', '')}"
             started = time.time()
             rc = make_package(repo, env)
             if rc != 0:
