@@ -369,21 +369,38 @@ def apt_flat_repo(deb_dir: Path, channel: str):
             pass
 
     # Create Packages
-    if scan:
-        with open(packages, "wb") as outf:
-            subprocess.run([scan, ".", "/dev/null"], cwd=deb_dir,
-                           check=True, stdout=outf)
-    else:
-        with open(packages, "wb") as outf:
-            if aptft is None:
-                raise RuntimeError("apt-ftparchive not found")
-            subprocess.run([aptft, "packages", "."], cwd=deb_dir,
-                           check=True, stdout=outf)
+    try:
+        if scan:
+            with open(packages, "wb") as outf:
+                subprocess.run([scan, ".", "/dev/null"], cwd=deb_dir,
+                               check=True, stdout=outf)
+        else:
+            with open(packages, "wb") as outf:
+                if aptft is None:
+                    raise RuntimeError("apt-ftparchive not found")
+                subprocess.run([aptft, "packages", "."], cwd=deb_dir,
+                               check=True, stdout=outf)
+    except subprocess.CalledProcessError as e:
+        # Non-zero exit may be a warning; check if Packages file was created
+        if packages.exists() and packages.stat().st_size > 0:
+            log(f"WARN: {scan or aptft} returned non-zero exit code "
+                f"{e.returncode}, but Packages file was created "
+                f"({packages.stat().st_size} bytes). Continuing.")
+        else:
+            log(f"ERROR: {scan or aptft} failed with exit code {e.returncode} "
+                f"and Packages file is missing or empty. Skipping APT metadata "
+                f"for {deb_dir}.")
+            return
 
     # gzip -n -c Packages > Packages.gz
-    with open(packages_gz, "wb") as gzout, open(packages, "rb") as pin:
-        subprocess.run(["gzip", "-n", "-c"], cwd=deb_dir, check=True,
-                       stdin=pin, stdout=gzout)
+    try:
+        with open(packages_gz, "wb") as gzout, open(packages, "rb") as pin:
+            subprocess.run(["gzip", "-n", "-c"], cwd=deb_dir, check=True,
+                           stdin=pin, stdout=gzout)
+    except subprocess.CalledProcessError as e:
+        log(f"WARN: gzip failed with exit code {e.returncode}. "
+            f"Packages.gz will not be available for {deb_dir}.")
+        # Continue without .gz - the uncompressed Packages file is sufficient
 
     # Build Release atomically
     try:
@@ -416,9 +433,14 @@ def apt_flat_repo(deb_dir: Path, channel: str):
             tmp.write(header)
 
             if aptft:
-                proc = subprocess.run([aptft, "release", "."], cwd=deb_dir,
-                                      check=True, stdout=subprocess.PIPE)
-                tmp.write(proc.stdout)
+                try:
+                    proc = subprocess.run([aptft, "release", "."], cwd=deb_dir,
+                                          check=True, stdout=subprocess.PIPE)
+                    tmp.write(proc.stdout)
+                except subprocess.CalledProcessError as e:
+                    log(f"WARN: apt-ftparchive release failed with exit code "
+                        f"{e.returncode}. Release file will have minimal metadata.")
+                    # Continue with header-only Release file
 
         os.replace(tmp_path, release)
     finally:
@@ -457,8 +479,13 @@ def apt_flat_repo(deb_dir: Path, channel: str):
                                               "Release"]
 
         log(f"Signing APT Release in {deb_dir} ...")
-        subprocess.run(sign_inrelease, cwd=deb_dir, check=True)
-        subprocess.run(sign_release_gpg, cwd=deb_dir, check=True)
+        try:
+            subprocess.run(sign_inrelease, cwd=deb_dir, check=True)
+            subprocess.run(sign_release_gpg, cwd=deb_dir, check=True)
+        except subprocess.CalledProcessError as e:
+            log(f"WARN: GPG signing failed with exit code {e.returncode}. "
+                f"Repository metadata will be unsigned.")
+            # Continue with unsigned repository
     else:
         log(f"{release} is missing!")
 
