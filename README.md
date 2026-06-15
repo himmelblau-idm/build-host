@@ -1,7 +1,7 @@
 # Himmelblau Build Host
 
 Automates **community builds** of Himmelblau and publishes distro repositories (apt/dnf/zypper) to a web root you host (e.g., Nginx).
-This repo wraps a few containerized helpers (notably `apt-ftparchive`) and a Python driver that builds, signs (if configured), and (re)indexes repos.
+This repo wraps a few containerized helpers (notably `apt-ftparchive` and `dpkg-scanpackages`) and a Python driver that builds, signs (if configured), and (re)indexes repos.
 
 ---
 
@@ -107,6 +107,7 @@ Ensure files created by the cron job land with the right group (via `sg <group>`
   python3 himmelblau-auto-build.py --publish-dir=/srv/repos/himmelblau
   ```
 * `Dockerfile.apt-ftparchive` — tiny container so we can run `apt-ftparchive` even on distros that don’t package it.
+* `Dockerfile.dpkg-scanpackages` — Ubuntu 26.04 scanner container used by `bin/dpkg-scanpackages` for DEB package indices.
 * `Makefile` — builds helper containers/one-time prerequisites. Re-run when helper images change.
 * `crontab` — example schedule to copy/paste.
 * `bin/apt-ftparchive`, `re-release.sh`, `key.sh` — supporting utilities (read script headers for details).
@@ -162,9 +163,9 @@ Example (every 6 hours):
   setfacl -Rm d:g:<web-group>:rwx /srv/repos/himmelblau
   ```
 
-**`apt-ftparchive` missing / wrong version**
+**APT metadata helper missing / wrong version**
 
-* Re-run `make` to (re)build the helper image; the driver calls it via `podman`.
+* Re-run `make` to (re)build the helper images; the driver calls them via `podman`.
 
 **Works manually, fails in cron**
 

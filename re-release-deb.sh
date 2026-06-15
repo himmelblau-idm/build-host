@@ -1,14 +1,15 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
 REPO=${1:?usage: $0 /path/to/repo [suite] [distro]}
 SUITE=${2:-stable}
 CODENAME=${3:-$(basename "$REPO")}
 APTFTPARCHIVE=$(realpath ./bin/apt-ftparchive)
+DPKG_SCANPACKAGES=$(realpath ./bin/dpkg-scanpackages)
 
 make
 rm -f "$REPO/Packages" "$REPO/Packages.gz"
 pushd $REPO
-dpkg-scanpackages . /dev/null > ./Packages
+"$DPKG_SCANPACKAGES" . /dev/null > ./Packages
 gzip -n -c "./Packages" > ./Packages.gz
 
 # Detect architectures from .deb filenames present in the directory

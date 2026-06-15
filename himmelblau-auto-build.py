@@ -329,9 +329,19 @@ def apt_flat_repo(deb_dir: Path, channel: str):
     GPG_HOMEDIR = os.environ.get("GPG_HOMEDIR", "").strip()
     GPG_EXTRA = os.environ.get("GPG_EXTRA", "").strip()
     APTFTPARCHIVE_ENV = os.environ.get("APTFTPARCHIVE", "").strip()
+    DPKG_SCANPACKAGES_ENV = os.environ.get("DPKG_SCANPACKAGES", "").strip()
 
     # Tool resolution
-    scan = shutil.which("dpkg-scanpackages")
+    scan_candidates: List[str] = []
+    if DPKG_SCANPACKAGES_ENV:
+        scan_candidates.append(DPKG_SCANPACKAGES_ENV)
+    local_scan = SCRIPT_DIR / "bin" / "dpkg-scanpackages"
+    if local_scan.is_file() and os.access(local_scan, os.X_OK):
+        scan_candidates.append(str(local_scan))
+    path = shutil.which("dpkg-scanpackages")
+    if path:
+        scan_candidates.append(path)
+    scan = next((c for c in scan_candidates if c), None)
 
     # Prefer ./bin/apt-ftparchive (next to the build script),
     # then PATH, then env
