@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+    paths:
+      - himmelblau-auto-build.py
+      - tests/**
+      - .github/workflows/tests.yml
+  pull_request:
+    paths:
+      - himmelblau-auto-build.py
+      - tests/**
+      - .github/workflows/tests.yml
+
+jobs:
+  apt-flat-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            dpkg-dev apt-utils gnupg python3 python3-pytest python3-packaging
+
+      - name: Run tests
+        run: pytest -q tests/

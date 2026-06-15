@@ -307,6 +307,51 @@ def collect_from_packaging(packaging_dir: Path, built_since: float):
 
 
 # --- Repo metadata ---
+def _scan_packages_index(deb_dir: Path, debs: List[Path],
+                         scan: Optional[str], aptft: Optional[str],
+                         out_path: Path, log) -> bool:
+    # A single corrupt .deb makes a whole-directory dpkg-scanpackages abort,
+    # so fall back to scanning each package and skipping the bad ones.
+    if scan:
+        try:
+            with open(out_path, "wb") as outf:
+                subprocess.run([scan, ".", "/dev/null"], cwd=deb_dir,
+                               check=True, stdout=outf)
+            if out_path.stat().st_size > 0:
+                return True
+        except subprocess.CalledProcessError as e:
+            log(f"WARN: dpkg-scanpackages returned {e.returncode} in "
+                f"{deb_dir}; retrying per-package.")
+
+        # Per-package fallback
+        wrote_any = False
+        with open(out_path, "wb") as outf:
+            for deb in debs:
+                try:
+                    proc = subprocess.run([scan, "./" + deb.name, "/dev/null"],
+                                          cwd=deb_dir, check=True,
+                                          stdout=subprocess.PIPE)
+                except subprocess.CalledProcessError as e:
+                    log(f"WARN: skipping {deb.name} (rc={e.returncode}).")
+                    continue
+                if proc.stdout:
+                    outf.write(proc.stdout)
+                    wrote_any = True
+        return wrote_any and out_path.stat().st_size > 0
+
+    if aptft:
+        try:
+            with open(out_path, "wb") as outf:
+                subprocess.run([aptft, "packages", "."], cwd=deb_dir,
+                               check=True, stdout=outf)
+        except subprocess.CalledProcessError as e:
+            log(f"WARN: apt-ftparchive packages returned {e.returncode} in "
+                f"{deb_dir}.")
+        return out_path.exists() and out_path.stat().st_size > 0
+
+    return False
+
+
 def apt_flat_repo(deb_dir: Path, channel: str):
     deb_dir = Path(deb_dir).resolve()
 
@@ -361,36 +406,26 @@ def apt_flat_repo(deb_dir: Path, channel: str):
     inrelease = deb_dir / "InRelease"
     release_gpg = deb_dir / "Release.gpg"
 
-    # Clean old indices/signatures
-    for p in (packages, packages_gz, inrelease, release_gpg):
-        try:
-            p.unlink()
-        except Exception:
-            pass
-
-    # Create Packages
+    # Build Packages into a temp file and swap it in only if non-empty, so a
+    # failed scan leaves the previous good metadata in place instead of wiping it.
+    debs = sorted(debs)
+    pkg_fd, pkg_tmp_name = tempfile.mkstemp(dir=str(deb_dir),
+                                            prefix=".Packages.")
+    os.close(pkg_fd)
+    pkg_tmp = Path(pkg_tmp_name)
     try:
-        if scan:
-            with open(packages, "wb") as outf:
-                subprocess.run([scan, ".", "/dev/null"], cwd=deb_dir,
-                               check=True, stdout=outf)
+        if _scan_packages_index(deb_dir, debs, scan, aptft, pkg_tmp, log):
+            os.replace(pkg_tmp, packages)
         else:
-            with open(packages, "wb") as outf:
-                if aptft is None:
-                    raise RuntimeError("apt-ftparchive not found")
-                subprocess.run([aptft, "packages", "."], cwd=deb_dir,
-                               check=True, stdout=outf)
-    except subprocess.CalledProcessError as e:
-        # Non-zero exit may be a warning; check if Packages file was created
-        if packages.exists() and packages.stat().st_size > 0:
-            log(f"WARN: {scan or aptft} returned non-zero exit code "
-                f"{e.returncode}, but Packages file was created "
-                f"({packages.stat().st_size} bytes). Continuing.")
-        else:
-            log(f"ERROR: {scan or aptft} failed with exit code {e.returncode} "
-                f"and Packages file is missing or empty. Skipping APT metadata "
-                f"for {deb_dir}.")
+            log(f"ERROR: empty Packages index for {deb_dir}; "
+                f"leaving existing APT metadata untouched.")
             return
+    finally:
+        if pkg_tmp.exists():
+            try:
+                pkg_tmp.unlink()
+            except Exception:
+                pass
 
     # gzip -n -c Packages > Packages.gz
     try:
@@ -403,11 +438,6 @@ def apt_flat_repo(deb_dir: Path, channel: str):
         # Continue without .gz - the uncompressed Packages file is sufficient
 
     # Build Release atomically
-    try:
-        release.unlink()
-    except Exception:
-        pass
-
     archs = set()
     for deb in debs:
         if "_amd64.deb" in deb.name:
