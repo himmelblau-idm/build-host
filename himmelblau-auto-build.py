@@ -54,7 +54,7 @@ DEB_RE = re.compile(
     r"""(?xi)^.*(?P<ver>\d+\.\d+\.\d+)-(?P<distro>[a-z0-9.]+)(?:~[0-9a-z]+)?_(?P<arch>amd64|arm64)\.deb$"""
 )
 RPM_RE = re.compile(
-    r"""(?xi).*- (?P<distro>fedora\d+|rawhide|rocky\d+|leap\d(?:\.\d)?|tumbleweed|sle\d+sp\d+|sle\d{2}|amzn\d+) \.rpm$"""
+    r"""(?xi).*-(?P<distro>fedora\d+|rawhide|rocky\d+|leap\d+(?:\.\d+)?|tumbleweed|sle\d+sp\d+|sle\d{2}|amzn\d+)\.(?P<arch>x86_64|aarch64|noarch)\.rpm$"""
 )
 
 GPG_KEYID = os.environ.get("HBL_GPG_KEYID")
@@ -276,7 +276,13 @@ def parse_artifact(p: Path) -> Tuple[str, Optional[str]]:
         return ("deb", "unknown")
     if nl.endswith(".rpm"):
         m = RPM_RE.match(nl)
-        return ("rpm", m.group("distro") if m else "unknown")
+        if m:
+            distro = m.group("distro")
+            arch = m.group("arch")
+            if arch == "aarch64":
+                return ("rpm", f"{distro}-arm64")
+            return ("rpm", distro)
+        return ("rpm", "unknown")
     if nl.endswith((".spdx", "sbom.json", ".cdx.json", ".spdx.json")):
         return ("sbom", None)
     return ("other", None)
@@ -744,7 +750,10 @@ def published_has_pkgs(base: Path, t: str) -> bool:
             pattern = "*_amd64.deb"
         return d.is_dir() and any(d.glob(pattern))
     else:
-        d = base / "rpm" / distro
+        if is_arm64:
+            d = base / "rpm" / f"{distro}-arm64"
+        else:
+            d = base / "rpm" / distro
         if not d.is_dir():
             return False
 
