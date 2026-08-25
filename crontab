@@ -1,3 +1,8 @@
 0 */6 * * * sg nginx -c "PATH=\$PATH:/home/dmulder/.cargo/bin TMPDIR=/mnt/tmp BUILDAH_TMPDIR=/mnt/tmp /usr/bin/python3 /home/dmulder/code/build-host/himmelblau-auto-build.py --publish-dir=/mnt-build/repos/himmelblau --log-file=/home/dmulder/himmelblau-build.log"
 */20 * * * * cd /home/dmulder/code/build-host && /usr/bin/git pull origin main >> /home/dmulder/build-host-git-pull.log 2>&1
 15 3 * * 0 sg nginx -c "/usr/bin/podman image prune -f"
+# Clean build artifacts and unused podman storage before each autobuild window.
+# Skips automatically if the autobuilder lock is held.
+45 23,5,11,17 * * * flock -n /mnt-build/repos/himmelblau/.build_lock -c 'rm -rf /mnt-build/build/himmelblau/target/* /mnt-build/build/himmelblau/packaging/* && podman container prune -f && podman image prune -af --filter until=24h'
+# Deeper weekly cleanup for older unused podman data.
+30 3 * * 0 flock -n /mnt-build/repos/himmelblau/.build_lock -c 'podman system prune -af --volumes'
