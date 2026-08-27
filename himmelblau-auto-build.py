@@ -110,6 +110,13 @@ def run(cmd, cwd: Optional[Path] = None, check=True, capture=False, env=None):
     )
 
 
+def build_env(**overrides: str) -> dict:
+    env = os.environ.copy()
+    env["COMMUNITY_SUPPORT"] = "1"
+    env.update(overrides)
+    return env
+
+
 def which(name: str) -> Optional[str]:
     return shutil.which(name)
 
@@ -606,7 +613,7 @@ def rpm_repo(rpm_dir: Path):
 def publish_per_distro(publish_root: Path, channel: str, label: str,
                        deb_map: Dict[str, List[Path]],
                        rpm_map: Dict[str, List[Path]],
-                       sboms: List[Path]):
+                       sboms: List[Path]) -> bool:
     base = publish_root / channel / label
     ensure_dir(base)
 
@@ -642,6 +649,8 @@ def publish_per_distro(publish_root: Path, channel: str, label: str,
         except FileNotFoundError:
             pass
         os.symlink(label, latest)
+        return True
+    return False
 
 
 # --- Missing-distro retry helpers ---
@@ -873,7 +882,7 @@ def retry_missing_for_stable(
         f"(publishing as {latest_tag})")
     checkout_clean(repo, f"origin/{stable_branch}")
     patch_signing_keys(repo / "Makefile")
-    env = os.environ.copy()
+    env = build_env()
     started = time.time()
     for tgt in missing:
         make_target(repo, tgt, env)
@@ -929,12 +938,11 @@ def retry_missing_for_nightly(
         return
     # Build missing targets from origin/main
     checkout_clean(repo, "origin/main")
-    env = os.environ.copy()
     # Derive the date suffix from the existing label (YYYY-MM-DD-<commit>)
     # so retries produce the same version as the original nightly build.
     m = NIGHTLY_LABEL_RE.match(label)
     label_date = m.group("date").replace("-", "") if m else dt.datetime.utcnow().strftime("%Y%m%d")
-    env["DEB_REVISION_APPEND"] = f"~{label_date}"
+    env = build_env(DEB_REVISION_APPEND=f"~{label_date}")
     started = time.time()
     for tgt in missing:
         make_target(repo, tgt, env)
@@ -1094,7 +1102,7 @@ def main():
                         f"{latest_stable} ...")
                     checkout_clean(repo, latest_stable)
                     patch_signing_keys(repo / "Makefile")
-                    env = os.environ.copy()
+                    env = build_env()
                     started = time.time()
                     rc = make_package(repo, env)
                     if rc != 0:
@@ -1111,10 +1119,10 @@ def main():
                         log(f"WARN: no stable artifacts found for "
                             f"{latest_stable}; skipping publish/state update.")
                     else:
-                        publish_per_distro(publish_root, "stable",
-                                           latest_stable, deb_map,
-                                           rpm_map, sboms)
-                        if rc == 0:
+                        published = publish_per_distro(
+                            publish_root, "stable", latest_stable,
+                            deb_map, rpm_map, sboms)
+                        if rc == 0 and published:
                             state.setdefault("built_tags", {}).setdefault(
                                                                 branch, [])
                             built = state["built_tags"][branch]
@@ -1124,7 +1132,8 @@ def main():
                             save_state(state_path, state)
                         else:
                             log("WARN: stable build failed for "
-                                f"{latest_stable}; not marking tag as built.")
+                                f"{latest_stable} or did not publish repo "
+                                "artifacts; not marking tag as built.")
 
         # ===== Normal nightly planner =====
         # Switch back to base log for nightly builds
@@ -1151,14 +1160,16 @@ def main():
                 log("WARN: no nightly artifacts found; "
                     "skipping publish/state update.")
             else:
-                publish_per_distro(publish_root, "nightly", label,
-                                   deb_map, rpm_map, sboms)
-                if rc == 0:
+                published = publish_per_distro(publish_root, "nightly",
+                                               label, deb_map, rpm_map,
+                                               sboms)
+                if rc == 0 and published:
                     state.setdefault("nightly", {})["last_commit"] = tip2
                     state["nightly"]["last_date"] = today
                     save_state(state_path, state)
                 else:
                     log("WARN: nightly build failed; "
+                        "or did not publish repo artifacts; "
                         "not marking commit as built.")
 
         log("Done.")
