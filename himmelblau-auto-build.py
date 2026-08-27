@@ -102,10 +102,15 @@ def switch_log(path: Optional[Path]):
 
 
 def run(cmd, cwd: Optional[Path] = None, check=True, capture=False, env=None):
+    # sys.stdout/sys.stderr may have been switched to a channel-specific log.
+    # Passing them explicitly is important: an otherwise inherited fd still
+    # points at the process' original stdout/stderr, so child build output
+    # would be absent from the published log even though our Python messages
+    # appeared there.
     return subprocess.run(
         cmd, cwd=str(cwd) if cwd else None, check=check,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
+        stdout=subprocess.PIPE if capture else sys.stdout,
+        stderr=subprocess.PIPE if capture else sys.stderr,
         env=env
     )
 
@@ -238,32 +243,35 @@ def checkout_clean(repo: Path, ref: str):
 
 
 # --- Build & collect ---
-def make_package(repo: Path, env: Optional[dict]) -> int:
-    log("Running: make package")
+def run_make(repo: Path, target: str, env: Optional[dict],
+             continuing: bool = False) -> int:
+    """Run one make target with searchable start/end failure markers."""
+    command = f"/usr/bin/make {target}"
+    started = time.monotonic()
+    log(f"BUILD START: target={target} command={command} cwd={repo}")
     try:
-        run(["/usr/bin/make", "package"], cwd=repo, env=env)
+        run(["/usr/bin/make", target], cwd=repo, env=env)
+        elapsed = time.monotonic() - started
+        log(f"BUILD OK: target={target} elapsed={elapsed:.1f}s")
         return 0
     except subprocess.CalledProcessError as e:
+        elapsed = time.monotonic() - started
+        suffix = "; continuing" if continuing else ""
+        log(f"BUILD FAILED: target={target} exit_code={e.returncode} "
+            f"elapsed={elapsed:.1f}s command={command}{suffix}")
         return e.returncode
+
+
+def make_package(repo: Path, env: Optional[dict]) -> int:
+    return run_make(repo, "package", env)
 
 
 def make_arm64(repo: Path, env: Optional[dict]) -> int:
-    log("Running: make arm64")
-    try:
-        run(["/usr/bin/make", "arm64"], cwd=repo, env=env)
-        return 0
-    except subprocess.CalledProcessError as e:
-        return e.returncode
+    return run_make(repo, "arm64", env)
 
 
 def make_target(repo: Path, target: str, env: Optional[dict]) -> int:
-    try:
-        log(f"Running: make {target}")
-        run(["/usr/bin/make", target], cwd=repo, env=env)
-        return 0
-    except subprocess.CalledProcessError as e:
-        log(f"WARN: make {target} failed with rc={e.returncode} (continuing)")
-        return e.returncode
+    return run_make(repo, target, env, continuing=True)
 
 
 def parse_artifact(p: Path) -> Tuple[str, Optional[str]]:
@@ -311,6 +319,18 @@ def collect_from_packaging(packaging_dir: Path, built_since: float):
         elif kind == "sbom":
             sboms.append(p)
     return deb, rpm, sboms
+
+
+def log_artifact_summary(context: str, deb_map: Dict[str, List[Path]],
+                         rpm_map: Dict[str, List[Path]], sboms: List[Path]):
+    """Make partial output obvious without requiring directory inspection."""
+    deb_targets = ", ".join(sorted(deb_map)) or "none"
+    rpm_targets = ", ".join(sorted(rpm_map)) or "none"
+    log(f"ARTIFACT SUMMARY: context={context} "
+        f"deb_files={sum(map(len, deb_map.values()))} "
+        f"deb_targets={deb_targets}; "
+        f"rpm_files={sum(map(len, rpm_map.values()))} "
+        f"rpm_targets={rpm_targets}; sbom_files={len(sboms)}")
 
 
 # --- Repo metadata ---
@@ -837,12 +857,7 @@ def patch_signing_keys(filename):
 
 
 def make_sign_rpms(repo: Path, env: Optional[dict]) -> int:
-    log("Running: make sign-rpms")
-    try:
-        run(["/usr/bin/make", "sign-rpms"], cwd=repo, env=env)
-        return 0
-    except subprocess.CalledProcessError as e:
-        return e.returncode
+    return run_make(repo, "sign-rpms", env)
 
 
 def retry_missing_for_stable(
@@ -884,11 +899,19 @@ def retry_missing_for_stable(
     patch_signing_keys(repo / "Makefile")
     env = build_env()
     started = time.time()
+    failed = []
     for tgt in missing:
-        make_target(repo, tgt, env)
-    make_sign_rpms(repo, env)
+        if make_target(repo, tgt, env) != 0:
+            failed.append(tgt)
+    sign_rc = make_sign_rpms(repo, env)
     deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR,
                                                      built_since=started)
+    log_artifact_summary(f"stable/{latest_tag} retry", deb_map, rpm_map,
+                         sboms)
+    if failed or sign_rc != 0:
+        log(f"RETRY FAILED: channel=stable label={latest_tag} "
+            f"failed_targets={','.join(failed) or 'none'} "
+            f"sign_rpms_exit_code={sign_rc}")
     publish_incremental(publish_root, "stable", latest_tag, deb_map,
                         rpm_map, sboms)
 
@@ -944,10 +967,16 @@ def retry_missing_for_nightly(
     label_date = m.group("date").replace("-", "") if m else dt.datetime.utcnow().strftime("%Y%m%d")
     env = build_env(DEB_REVISION_APPEND=f"~{label_date}")
     started = time.time()
+    failed = []
     for tgt in missing:
-        make_target(repo, tgt, env)
+        if make_target(repo, tgt, env) != 0:
+            failed.append(tgt)
     deb_map, rpm_map, sboms = collect_from_packaging(repo / PACKAGING_DIR,
                                                      built_since=started)
+    log_artifact_summary(f"nightly/{label} retry", deb_map, rpm_map, sboms)
+    if failed:
+        log(f"RETRY FAILED: channel=nightly label={label} "
+            f"failed_targets={','.join(failed)}")
     publish_incremental(publish_root, "nightly", label, deb_map,
                         rpm_map, sboms)
 
@@ -1114,6 +1143,8 @@ def main():
                             f"{latest_stable} (rc={rc_arm64})")
                     deb_map, rpm_map, sboms = collect_from_packaging(
                         packaging_dir, built_since=started)
+                    log_artifact_summary(f"stable/{latest_stable}", deb_map,
+                                         rpm_map, sboms)
                     has_artifacts = bool(deb_map or rpm_map or sboms)
                     if not has_artifacts:
                         log(f"WARN: no stable artifacts found for "
@@ -1155,6 +1186,7 @@ def main():
                 collect_from_packaging(packaging_dir, built_since=started)
             )
             label = f"{today}-{(tip2 or 'unknown')[:12]}"
+            log_artifact_summary(f"nightly/{label}", deb_map, rpm_map, sboms)
             has_artifacts = bool(deb_map or rpm_map or sboms)
             if not has_artifacts:
                 log("WARN: no nightly artifacts found; "
