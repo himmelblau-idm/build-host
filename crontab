@@ -3,6 +3,6 @@
 15 3 * * 0 sg nginx -c "/usr/bin/podman image prune -f"
 # Clean build artifacts and unused podman storage before each autobuild window.
 # Skips automatically if the autobuilder lock is held.
-45 23,5,11,17 * * * flock -n /mnt-build/repos/himmelblau/.build_lock -c 'rm -rf /mnt-build/build/himmelblau/target/* /mnt-build/build/himmelblau/packaging/* && podman container prune -f && podman image prune -af --filter until=24h'
+45 23,5,11,17 * * * flock -n /mnt-build/repos/himmelblau/.build_lock -c 'rm -rf /mnt-build/build/himmelblau/target/* /mnt-build/build/himmelblau/packaging/* && podman container prune -f && podman image prune -af --filter until=24h && make -C /home/dmulder/code/build-host'
 # Deeper weekly cleanup for older unused podman data.
-30 3 * * 0 flock -n /mnt-build/repos/himmelblau/.build_lock -c 'podman system prune -af --volumes'
+30 3 * * 0 flock -n /mnt-build/repos/himmelblau/.build_lock -c 'podman system prune -af --volumes && make -C /home/dmulder/code/build-host'
