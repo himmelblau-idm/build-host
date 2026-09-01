@@ -42,6 +42,7 @@ SUPPORTED_BRANCHES = ["stable-4.x"]
 STATE_FILE = ".build_state.json"
 LOCK_FILE = ".build_lock"
 PACKAGING_DIR = "packaging"
+BUILD_ARM64_RPMS = False
 
 STABLE_TAG_RE = re.compile(
     r'^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
@@ -267,7 +268,8 @@ def make_package(repo: Path, env: Optional[dict]) -> int:
 
 
 def make_arm64(repo: Path, env: Optional[dict]) -> int:
-    return run_make(repo, "arm64", env)
+    target = "arm64" if BUILD_ARM64_RPMS else "deb-arm64"
+    return run_make(repo, target, env)
 
 
 def make_target(repo: Path, target: str, env: Optional[dict]) -> int:
@@ -1079,6 +1081,8 @@ def main():
         expected_targets, arm64_targets = (
             parse_per_distro_targets_via_make_help(repo)
         )
+        if not BUILD_ARM64_RPMS:
+            arm64_targets = [t for t in arm64_targets if target_is_deb(t)]
 
         # ===== Retry missing BEFORE planning new builds =====
         if expected_targets:
